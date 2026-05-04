@@ -3,213 +3,263 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Torrgether MVP</title>
+  <title>Torrgether</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar">
-      <div class="brand">
-        <div class="eyebrow" data-i18n="app.eyebrow">Torrgether 0.2.0</div>
-        <h1 data-i18n="app.heading">Shared torrent viewer</h1>
-        <p class="muted" data-i18n="app.subtitle">Synchronized legal video playback with bounded RAM streaming and MPV control.</p>
+  <main class="app-shell">
+    <aside class="rail">
+      <div class="brand-mark">
+        <div class="logo-shape">▶</div>
+        <strong>Torrgether</strong>
       </div>
-      <div class="top-actions">
-        <label class="language-label" for="languageSelect" data-i18n="labels.language">Language</label>
-        <select id="languageSelect" class="language-select">
-          <option value="en">English</option>
-          <option value="ru">Русский</option>
-          <option value="zh-CN">简体中文</option>
-          <option value="ja">日本語</option>
-        </select>
-        <div class="top-status">
-          <span id="connectionStatus" class="pill danger" data-i18n="status.offline">offline</span>
-          <span id="mpvPreflightStatus" class="pill warn" data-i18n="mpv.checking">mpv: checking</span>
-          <span class="pill"><span data-i18n="status.role">role:</span> <b id="roleStatus">-</b></span>
-          <span class="pill"><span data-i18n="status.seq">seq:</span> <b id="seqStatus">0</b></span>
-        </div>
-      </div>
-    </header>
 
-    <section class="layout">
-      <section class="main-panel stack">
-        <section class="video-card">
-          <div id="playerStage" class="player-stage">
-            <div>
-              <div class="stage-kicker" data-i18n="player.kicker">MPV playback</div>
-              <h2 id="videoTitle" data-i18n="player.noVideo">No video selected</h2>
-              <p id="mkvHint" class="muted" data-i18n="player.chooseHint">Choose a torrent or magnet. Torrgether will start MPV automatically after the stream is ready.</p>
-            </div>
-          </div>
-          <div class="video-footer">
-            <div>
-              <h2 data-i18n="player.title">Player</h2>
-              <p class="muted small" data-i18n="player.subtitle">Playback control goes through MPV IPC and syncs with the room.</p>
-            </div>
-            <div class="footer-actions">
-              <button id="openMpvBtn" class="primary" disabled data-i18n="buttons.restartMpv">Restart MPV</button>
-              <button id="mpvStopBtn" class="ghost" disabled data-i18n="buttons.stopMpv">Stop MPV</button>
-            </div>
-          </div>
-        </section>
+      <nav class="nav-list" aria-label="Primary">
+        <button class="nav-item active" type="button" data-i18n="nav.home">Home</button>
+        <button class="nav-item" type="button" data-i18n="nav.movies">Movies</button>
+        <button class="nav-item" type="button" data-i18n="nav.series">Series</button>
+        <button class="nav-item" type="button" data-i18n="nav.anime">Anime</button>
+        <button class="nav-item" type="button" data-i18n="nav.favorites">Favorites</button>
+        <button class="nav-item" type="button" data-i18n="nav.history">History</button>
+        <button class="nav-item" type="button" data-i18n="nav.downloads">Downloads</button>
+        <button class="nav-item" type="button" data-i18n="nav.settings">Settings</button>
+      </nav>
 
-        <section class="card stack compact">
-          <div class="section-head">
-            <div>
-              <h2 data-i18n="controls.title">MPV Controls</h2>
-              <p class="muted small" data-i18n="controls.subtitle">Seek and pause commands are sent to MPV and then synchronized.</p>
-            </div>
-            <span id="mpvStatus" class="pill" data-i18n="mpv.notStarted">not started</span>
-          </div>
-
-          <div class="mpv-controls">
-            <button id="mpvBackBtn" disabled data-i18n="controls.back">-10 sec</button>
-            <button id="mpvToggleBtn" class="primary" disabled data-i18n="buttons.playPause">Play / Pause</button>
-            <button id="mpvForwardBtn" disabled data-i18n="controls.forward">+10 sec</button>
-            <button id="showMpvLogsBtn" class="ghost" data-i18n="buttons.showLog">Show log</button>
-          </div>
-        </section>
-
-        <section class="card stack compact">
-          <div class="section-head">
-            <div>
-              <h2 data-i18n="sources.title">Sources</h2>
-              <p class="muted small" data-i18n="sources.subtitle">Pick a torrent manually or import one from RuTracker.</p>
-            </div>
-            <div class="tabbar">
-              <button id="manualSourceTab" class="tab active" type="button" data-i18n="sources.manual">Manual</button>
-              <button id="rutrackerSourceTab" class="tab" type="button" data-i18n="sources.rutracker">RuTracker</button>
-            </div>
-          </div>
-
-          <div id="manualSourcePanel" class="source-panel">
-            <section id="hostControls" class="stack compact-inner hidden">
-              <div>
-                <h3 data-i18n="sources.hostControl">Host Control</h3>
-                <p class="muted small" data-i18n="sources.hostSubtitle">Choose a torrent and video file for the room.</p>
-              </div>
-
-              <button id="chooseTorrentBtn" class="full" data-i18n="buttons.chooseTorrent">Choose .torrent</button>
-              <div class="row">
-                <input id="magnetInput" data-i18n-placeholder="sources.magnetPlaceholder" placeholder="or paste magnet URI" />
-                <button id="setMagnetBtn" data-i18n="buttons.load">Load</button>
-              </div>
-              <label for="fileSelect" data-i18n="sources.videoInside">Video inside torrent</label>
-              <select id="fileSelect" disabled></select>
-            </section>
-          </div>
-
-          <div id="rutrackerPanel" class="source-panel hidden">
-            <div class="rutracker-toolbar">
-              <button id="rutrackerOpenBtn" class="primary" type="button" data-i18n="buttons.rutrackerOpen">Open RuTracker</button>
-              <button id="rutrackerBackBtn" type="button" data-i18n="buttons.rutrackerBack">Back</button>
-              <button id="rutrackerForwardBtn" type="button" data-i18n="buttons.rutrackerForward">Forward</button>
-              <button id="rutrackerReloadBtn" type="button" data-i18n="buttons.rutrackerReload">Reload</button>
-              <button id="rutrackerCloseBtn" class="ghost" type="button" data-i18n="buttons.rutrackerClose">Hide</button>
-            </div>
-            <p id="rutrackerStatus" class="muted small" data-i18n="rutracker.subtitle">Log in inside this isolated panel, then click a magnet or download a .torrent.</p>
-            <div id="rutrackerViewport" class="rutracker-viewport">
-              <div class="rutracker-placeholder" data-i18n="rutracker.placeholder">Open RuTracker to browse and import torrents.</div>
-            </div>
-          </div>
-        </section>
-
-        <section class="card stack compact">
-          <div class="section-head">
-            <div>
-              <h2 data-i18n="diagnostics.title">Diagnostics</h2>
-            </div>
-          </div>
-          <details class="debug-box">
-            <summary data-i18n="diagnostics.summary">MPV diagnostics</summary>
-            <p class="muted small"><span data-i18n="diagnostics.log">Log:</span> <code id="mpvLogPath" data-i18n="diagnostics.memory">current session memory</code></p>
-            <button id="openLogsFolderBtn" class="ghost" data-i18n="buttons.openLogs">Open logs folder</button>
-            <pre id="mpvLog" class="mpv-log"></pre>
-          </details>
-        </section>
+      <section class="rail-section">
+        <p class="rail-title" data-i18n="nav.categories">Categories</p>
+        <span>Action</span>
+        <span>Drama</span>
+        <span>Comedy</span>
+        <span>Thriller</span>
+        <span>Open license</span>
       </section>
 
-      <aside class="sidebar stack">
-        <section class="card stack compact">
-          <div class="section-head">
+      <section class="profile-strip">
+        <span class="avatar">TG</span>
+        <span id="roleStatus">-</span>
+      </section>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div class="search-box">
+          <span aria-hidden="true">⌕</span>
+          <input id="sourceSearchInput" data-i18n-placeholder="search.placeholder" placeholder="Search legal movies, public-domain video..." />
+          <button id="sourceSearchBtn" class="icon-button" type="button" data-i18n-title="buttons.search" title="Search">↵</button>
+        </div>
+        <div class="top-actions">
+          <label class="visually-compact" for="languageSelect" data-i18n="labels.language">UI language</label>
+          <select id="languageSelect" class="compact-select">
+            <option value="en">English</option>
+            <option value="ru">Русский</option>
+            <option value="uk">Українська</option>
+            <option value="zh-CN">简体中文</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="es">Español</option>
+            <option value="pt-BR">Português</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="it">Italiano</option>
+            <option value="pl">Polski</option>
+            <option value="tr">Türkçe</option>
+            <option value="ar">العربية</option>
+            <option value="hi">हिन्दी</option>
+            <option value="id">Bahasa Indonesia</option>
+            <option value="vi">Tiếng Việt</option>
+          </select>
+          <label class="visually-compact" for="contentLanguageSelect" data-i18n="labels.audioLanguage">Audio language</label>
+          <select id="contentLanguageSelect" class="compact-select">
+            <option value="any">Any</option>
+            <option value="en">English</option>
+            <option value="ru">Русский</option>
+            <option value="uk">Українська</option>
+            <option value="zh">中文</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="es">Español</option>
+            <option value="pt">Português</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="it">Italiano</option>
+            <option value="pl">Polski</option>
+            <option value="tr">Türkçe</option>
+            <option value="ar">العربية</option>
+            <option value="hi">हिन्दी</option>
+            <option value="id">Bahasa Indonesia</option>
+            <option value="vi">Tiếng Việt</option>
+          </select>
+          <span id="connectionStatus" class="pill danger" data-i18n="status.offline">offline</span>
+          <span id="mpvPreflightStatus" class="pill warn" data-i18n="mpv.checking">mpv: checking</span>
+        </div>
+      </header>
+
+      <section id="updateBanner" class="update-banner hidden">
+        <span id="updateText"></span>
+        <button id="updateActionBtn" type="button" data-i18n="updates.open">Open release</button>
+        <button id="updateDismissBtn" class="icon-button" type="button" data-i18n-title="updates.dismiss" title="Dismiss">×</button>
+      </section>
+
+      <section class="content-grid">
+        <section class="catalog-pane">
+          <section class="hero-panel">
             <div>
-              <h2 data-i18n="room.title">Room</h2>
-              <p class="muted small" data-i18n="room.subtitle">The first participant becomes host.</p>
+              <p class="kicker" data-i18n="app.eyebrow">Torrgether 0.3.0</p>
+              <h1 id="detailTitle">Sintel</h1>
+              <p id="detailMeta" class="meta-line">2010 · 1080p · open movie</p>
+              <p id="detailDescription" class="hero-copy">Open-license catalog results can be imported directly into the room and streamed through MPV from RAM.</p>
+              <div class="hero-actions">
+                <button id="detailImportBtn" class="primary" type="button" data-i18n="buttons.watch">Watch</button>
+                <button id="detailFavoriteBtn" type="button" data-i18n="buttons.favorite">Favorite</button>
+              </div>
             </div>
+          </section>
+
+          <section class="section-line">
+            <h2 data-i18n="catalog.popular">Popular</h2>
+            <span id="sourceCount" class="linkish">0</span>
+          </section>
+          <p id="languageNotice" class="notice hidden"></p>
+          <div id="sourceResults" class="poster-row"></div>
+
+          <section class="section-line">
+            <h2 data-i18n="catalog.continue">Continue watching</h2>
+          </section>
+          <div class="watch-row">
+            <article class="watch-card">
+              <strong id="videoTitle" data-i18n="player.noVideo">No video selected</strong>
+              <span id="mkvHint" data-i18n="player.chooseHint">Choose a catalog result, .torrent, or magnet.</span>
+              <div class="mini-progress"><span id="progressBar"></span></div>
+            </article>
+            <article class="watch-card">
+              <strong data-i18n="stream.ramCache">RAM cache</strong>
+              <span id="bufferStatus">-</span>
+              <div class="mini-progress ram"><span id="ramBar"></span></div>
+            </article>
           </div>
 
-          <label for="serverUrl" data-i18n="room.signalingUrl">Signaling URL</label>
-          <input id="serverUrl" value="http://localhost:3000" />
-
-          <label for="serverToken" data-i18n="room.serverToken">Server token</label>
-          <input id="serverToken" type="password" autocomplete="off" data-i18n-placeholder="room.optional" placeholder="optional" />
-
-          <div class="grid-2">
-            <div>
-              <label for="roomId" data-i18n="room.room">Room</label>
-              <input id="roomId" value="demo-room" />
+          <section class="source-panel-shell">
+            <div class="section-line">
+              <h2 data-i18n="sources.title">Sources</h2>
+              <div class="tabbar">
+                <button id="catalogSourceTab" class="tab active" type="button" data-i18n="sources.catalog">Catalog</button>
+                <button id="manualSourceTab" class="tab" type="button" data-i18n="sources.manual">Manual</button>
+                <button id="rutrackerSourceTab" class="tab" type="button" data-i18n="sources.rutracker">RuTracker</button>
+              </div>
             </div>
-            <div>
-              <label for="displayName" data-i18n="room.name">Name</label>
-              <input id="displayName" value="Viewer" data-i18n-value="room.defaultName" />
-            </div>
-          </div>
 
-          <button id="joinBtn" class="primary full" data-i18n="buttons.join">Join / reconnect</button>
+            <div id="catalogSourcePanel" class="source-panel">
+              <div id="torrentList" class="torrent-list"></div>
+            </div>
+
+            <div id="manualSourcePanel" class="source-panel hidden">
+              <section id="hostControls" class="manual-controls hidden">
+                <button id="chooseTorrentBtn" data-i18n="buttons.chooseTorrent">Choose .torrent</button>
+                <div class="inline-load">
+                  <input id="magnetInput" data-i18n-placeholder="sources.magnetPlaceholder" placeholder="or paste magnet URI" />
+                  <button id="setMagnetBtn" data-i18n="buttons.load">Load</button>
+                </div>
+                <label for="fileSelect" data-i18n="sources.videoInside">Video inside torrent</label>
+                <select id="fileSelect" disabled></select>
+              </section>
+            </div>
+
+            <div id="rutrackerPanel" class="source-panel hidden">
+              <div class="rutracker-toolbar">
+                <button id="rutrackerOpenBtn" class="primary" type="button" data-i18n="buttons.rutrackerOpen">Open RuTracker</button>
+                <button id="rutrackerBackBtn" type="button" data-i18n="buttons.rutrackerBack">Back</button>
+                <button id="rutrackerForwardBtn" type="button" data-i18n="buttons.rutrackerForward">Forward</button>
+                <button id="rutrackerReloadBtn" type="button" data-i18n="buttons.rutrackerReload">Reload</button>
+                <button id="rutrackerCloseBtn" type="button" data-i18n="buttons.rutrackerClose">Hide</button>
+              </div>
+              <p id="rutrackerStatus" class="muted small" data-i18n="rutracker.subtitle">Open the isolated RuTracker panel and import a magnet or .torrent into RAM.</p>
+              <div id="rutrackerViewport" class="rutracker-viewport">
+                <div class="rutracker-placeholder" data-i18n="rutracker.placeholder">RuTracker opens here.</div>
+              </div>
+            </div>
+          </section>
         </section>
 
-        <section class="card stack compact">
-          <div class="section-head">
-            <div>
-              <h2 data-i18n="stream.title">Stream</h2>
-              <p class="muted small" data-i18n="stream.subtitle">Peers, speed, progress, and bounded RAM cache.</p>
+        <aside class="detail-pane">
+          <div class="poster-frame">
+            <img id="detailPoster" alt="" src="https://archive.org/services/img/Sintel" />
+          </div>
+          <div class="detail-actions">
+            <button id="openMpvBtn" class="primary" disabled data-i18n="buttons.restartMpv">Restart MPV</button>
+            <button id="mpvStopBtn" disabled data-i18n="buttons.stopMpv">Stop MPV</button>
+          </div>
+
+          <div class="tabbar wide">
+            <button class="tab active" type="button" data-i18n="catalog.torrents">Torrents</button>
+            <button class="tab" type="button" data-i18n="catalog.info">Information</button>
+          </div>
+
+          <section class="stats-grid">
+            <div><span data-i18n="stream.peers">Peers</span><b id="peerStatus">-</b></div>
+            <div><span data-i18n="stream.speed">Speed</span><b id="speedStatus">-</b></div>
+            <div><span data-i18n="stream.time">Time</span><b><span id="timeStatus">0.0</span>s</b></div>
+            <div><span data-i18n="status.seq">seq:</span><b id="seqStatus">0</b></div>
+          </section>
+
+          <section class="room-box">
+            <h2 data-i18n="room.title">Room</h2>
+            <label for="serverUrl" data-i18n="room.signalingUrl">Signaling URL</label>
+            <input id="serverUrl" value="http://localhost:3000" />
+            <label for="serverToken" data-i18n="room.serverToken">Server token</label>
+            <input id="serverToken" type="password" autocomplete="off" data-i18n-placeholder="room.optional" placeholder="optional" />
+            <div class="two-col">
+              <div>
+                <label for="roomId" data-i18n="room.room">Room</label>
+                <input id="roomId" value="demo-room" />
+              </div>
+              <div>
+                <label for="displayName" data-i18n="room.name">Name</label>
+                <input id="displayName" value="Viewer" data-i18n-value="room.defaultName" />
+              </div>
             </div>
-          </div>
+            <button id="joinBtn" class="primary full" data-i18n="buttons.join">Join</button>
+          </section>
 
-          <div class="metrics">
-            <div class="metric"><span data-i18n="stream.peers">Peers</span><b id="peerStatus">-</b></div>
-            <div class="metric"><span data-i18n="stream.speed">Speed</span><b id="speedStatus">-</b></div>
-            <div class="metric"><span data-i18n="stream.time">Time</span><b><span id="timeStatus">0.0</span>s</b></div>
-          </div>
-
-          <div class="progress-block">
-            <div class="progress-title"><span data-i18n="stream.file">File</span><b id="progressPercent">0%</b></div>
-            <div class="bar"><span id="progressBar"></span></div>
-          </div>
-          <div class="progress-block">
-            <div class="progress-title"><span data-i18n="stream.ramCache">RAM cache</span><b id="ramShortStatus">-</b></div>
-            <div class="bar ram"><span id="ramBar"></span></div>
-          </div>
-          <div class="cache-metrics">
-            <div class="metric mini"><span data-i18n="stream.cachePressure">Pressure</span><b id="cachePressureStatus">-</b></div>
-            <div class="metric mini"><span data-i18n="stream.evictions">Evictions</span><b id="evictionStatus">0</b></div>
-            <div class="metric mini"><span data-i18n="stream.refetch">Refetch</span><b id="refetchStatus">0</b></div>
-            <div class="metric mini"><span data-i18n="stream.pending">Pending</span><b id="pendingStatus">0</b></div>
-          </div>
-          <p id="bufferStatus" class="muted small">-</p>
-        </section>
-
-        <section class="card stack compact">
-          <div class="section-head">
-            <div>
-              <h2 data-i18n="participants.title">Participants</h2>
-              <p class="muted small" data-i18n="participants.subtitle">Readiness shows who has loaded the current torrent.</p>
+          <section class="controls-box">
+            <h2 data-i18n="controls.title">MPV Controls</h2>
+            <span id="mpvStatus" class="pill" data-i18n="mpv.notStarted">not started</span>
+            <div class="mpv-controls">
+              <button id="mpvBackBtn" disabled data-i18n="controls.back">-10 sec</button>
+              <button id="mpvToggleBtn" class="primary" disabled data-i18n="buttons.playPause">Play / Pause</button>
+              <button id="mpvForwardBtn" disabled data-i18n="controls.forward">+10 sec</button>
+              <button id="showMpvLogsBtn" data-i18n="buttons.showLog">Show log</button>
             </div>
-          </div>
-          <ul id="members" class="members"></ul>
-        </section>
+          </section>
 
-        <section class="card stack compact">
-          <div class="section-head">
-            <div>
-              <h2 data-i18n="events.title">Events</h2>
-              <p class="muted small" data-i18n="events.subtitle">Warnings, reconnects, and synchronization actions.</p>
-            </div>
-          </div>
-          <pre id="log" class="app-log"></pre>
-        </section>
-      </aside>
+          <section>
+            <h2 data-i18n="participants.title">Participants</h2>
+            <ul id="members" class="members"></ul>
+          </section>
+
+          <section>
+            <h2 data-i18n="diagnostics.title">Diagnostics</h2>
+            <details class="debug-box">
+              <summary data-i18n="diagnostics.summary">MPV diagnostics</summary>
+              <p class="muted small"><span data-i18n="diagnostics.log">Log:</span> <code id="mpvLogPath" data-i18n="diagnostics.memory">current session memory</code></p>
+              <button id="openLogsFolderBtn" data-i18n="buttons.openLogs">Open logs</button>
+              <pre id="mpvLog" class="mpv-log"></pre>
+            </details>
+          </section>
+
+          <section>
+            <h2 data-i18n="events.title">Events</h2>
+            <pre id="log" class="app-log"></pre>
+          </section>
+        </aside>
+      </section>
     </section>
+
+    <span id="progressPercent" class="hidden">0%</span>
+    <span id="ramShortStatus" class="hidden">-</span>
+    <span id="cachePressureStatus" class="hidden">-</span>
+    <span id="evictionStatus" class="hidden">0</span>
+    <span id="refetchStatus" class="hidden">0</span>
+    <span id="pendingStatus" class="hidden">0</span>
   </main>
 
   <script type="module" src="./renderer.js"></script>

@@ -141,7 +141,12 @@ function Add-SystemPathEntry {
 [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
 public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
 '@
-  $type = Add-Type -MemberDefinition $signature -Name Win32SendMessageTimeout -Namespace Torrgether -PassThru
+  $existingType = ([System.Management.Automation.PSTypeName]'Torrgether.Win32SendMessageTimeout').Type
+  $type = if ($existingType) {
+    $existingType
+  } else {
+    Add-Type -MemberDefinition $signature -Name Win32SendMessageTimeout -Namespace Torrgether -PassThru
+  }
   $result = [UIntPtr]::Zero
   [void]$type::SendMessageTimeout([IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 0x2, 5000, [ref]$result)
   Write-Step "Added to System PATH: $fullPath"

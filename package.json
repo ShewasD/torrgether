@@ -1,7 +1,7 @@
 {
-  "name": "torrgether-mvp",
-  "version": "0.2.0",
-  "description": "Legal co-watching MVP with Windows MPV support, public signaling server config, redacted logs, and RAM-only torrent streaming.",
+  "name": "torrgether",
+  "version": "0.3.0",
+  "description": "Legal co-watching desktop app with catalog browsing, update checks, MPV control, and RAM-only torrent streaming.",
   "author": "Torrgether contributors",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "client": "electron desktop/main.js",
     "start": "electron desktop/main.js",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
-    "check": "node --check server/server.js && node --check desktop/main.js && node --check desktop/preload.cjs && node --check renderer/renderer.js",
+    "check": "node --check server/server.js && node --check desktop/main.js && node --check desktop/preload.cjs && node --check desktop/sourceProviders.js && node --check desktop/updateCheck.js && node --check renderer/renderer.js",
     "lint": "eslint .",
     "test": "node --test",
     "pack": "electron-builder --dir",
@@ -25,7 +25,6 @@
     "directories": {
       "output": "dist"
     },
-    "npmRebuild": false,
     "files": [
       "desktop/**/*",
       "renderer/**/*",
@@ -102,6 +101,9 @@
         "mpv"
       ]
     }
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "express": "^5.1.0",

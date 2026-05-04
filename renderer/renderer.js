@@ -6,11 +6,30 @@ const RUTRACKER_BOUNDS_MIN_SIZE = 24
 
 const els = {
   languageSelect: $('languageSelect'),
+  contentLanguageSelect: $('contentLanguageSelect'),
+  updateBanner: $('updateBanner'),
+  updateText: $('updateText'),
+  updateActionBtn: $('updateActionBtn'),
+  updateDismissBtn: $('updateDismissBtn'),
+  sourceSearchInput: $('sourceSearchInput'),
+  sourceSearchBtn: $('sourceSearchBtn'),
+  sourceResults: $('sourceResults'),
+  sourceCount: $('sourceCount'),
+  languageNotice: $('languageNotice'),
+  detailTitle: $('detailTitle'),
+  detailMeta: $('detailMeta'),
+  detailDescription: $('detailDescription'),
+  detailPoster: $('detailPoster'),
+  detailImportBtn: $('detailImportBtn'),
+  detailFavoriteBtn: $('detailFavoriteBtn'),
+  torrentList: $('torrentList'),
   serverUrl: $('serverUrl'),
   serverToken: $('serverToken'),
   roomId: $('roomId'),
   displayName: $('displayName'),
   joinBtn: $('joinBtn'),
+  catalogSourceTab: $('catalogSourceTab'),
+  catalogSourcePanel: $('catalogSourcePanel'),
   manualSourceTab: $('manualSourceTab'),
   rutrackerSourceTab: $('rutrackerSourceTab'),
   manualSourcePanel: $('manualSourcePanel'),
@@ -87,13 +106,29 @@ const state = {
   torrentStatusInFlight: false,
   externalStatusIntervalInFlight: false,
   connectionStatus: { key: 'status.offline', params: {}, kind: 'danger' },
-  sourceTab: 'manual',
+  sourceTab: 'catalog',
   rutrackerVisible: false,
-  rutrackerBoundsRequest: null
+  rutrackerBoundsRequest: null,
+  contentLanguage: localStorage.getItem('torrgether.contentLanguage') || 'any',
+  sourceResults: [],
+  selectedSourceResult: null,
+  updateReleaseUrl: null
 }
 
 localStorage.setItem('torrgether.clientId', state.clientId)
 const busyButtons = new Set()
+const intervalHandles = new Set()
+
+function registerInterval(callback, ms) {
+  const id = setInterval(callback, ms)
+  intervalHandles.add(id)
+  return id
+}
+
+window.addEventListener('beforeunload', () => {
+  for (const id of intervalHandles) clearInterval(id)
+  intervalHandles.clear()
+})
 
 function t(key, params = {}) {
   return translate(state.locale, key, params)
@@ -110,6 +145,15 @@ function setLocale(locale) {
   updateVideoInfo()
   setMpvPreflight(state.mpvDetails)
   updateSourceTabs()
+  renderSourceResults(state.sourceResults)
+  renderSelectedSource(state.selectedSourceResult)
+}
+
+function setContentLanguage(language) {
+  state.contentLanguage = String(language || 'any')
+  localStorage.setItem('torrgether.contentLanguage', state.contentLanguage)
+  if (els.contentLanguageSelect) els.contentLanguageSelect.value = state.contentLanguage
+  searchCatalog().catch(err => logT('sources.importFailed', { error: err.message || err }))
 }
 
 function log(message) {
@@ -194,6 +238,9 @@ async function applyClientConfig() {
     if (config.mpv) setMpvPreflight(config.mpv)
     else await refreshMpvPreflight()
     if (config.logDir) logT('log.logsAt', { path: config.logDir })
+    if (!config.updateCheckDisabled && Number(config.updateCheckIntervalMs) > 0) {
+      registerInterval(() => checkForUpdates({ quiet: true }).catch(() => {}), Number(config.updateCheckIntervalMs))
+    }
   } catch (err) {
     logT('log.configFailed', { error: err.message || err })
   }
@@ -224,6 +271,7 @@ function updateActionState() {
   if (els.mpvBackBtn) els.mpvBackBtn.disabled = !isMpvConnected()
   if (els.mpvForwardBtn) els.mpvForwardBtn.disabled = !isMpvConnected()
   if (els.mpvStopBtn) els.mpvStopBtn.disabled = !state.mpvActive && !state.externalStatus?.running
+  if (els.detailImportBtn) els.detailImportBtn.disabled = !state.isHost || !state.selectedSourceResult || !hasMpv
   for (const button of busyButtons) button.disabled = true
 }
 
@@ -307,6 +355,151 @@ function updateVideoInfo() {
   els.videoTitle.textContent = title
   els.mkvHint.textContent = t('player.selectedHint', { name: state.currentTorrent.selectedFileName || title })
   updateActionState()
+}
+
+function formatBytes(bytes) {
+  const size = Number(bytes) || 0
+  if (!size) return '-'
+  if (size >= 1024 ** 3) return `${(size / 1024 ** 3).toFixed(1)} GB`
+  if (size >= 1024 ** 2) return `${(size / 1024 ** 2).toFixed(0)} MB`
+  return `${(size / 1024).toFixed(0)} KB`
+}
+
+function resultMeta(result) {
+  return [
+    result.year || '',
+    result.quality || '',
+    result.language || '',
+    formatBytes(result.sizeBytes)
+  ].filter(Boolean).join(' · ')
+}
+
+function renderSelectedSource(result) {
+  state.selectedSourceResult = result || null
+  const title = result?.title || 'Torrgether'
+  els.detailTitle.textContent = title
+  els.detailMeta.textContent = result ? resultMeta(result) : 'RAM-only streaming'
+  els.detailDescription.textContent = result?.description || t('app.subtitle')
+  if (els.detailPoster && result?.posterUrl) els.detailPoster.src = result.posterUrl
+  renderTorrentList(result)
+}
+
+function renderTorrentList(result) {
+  if (!els.torrentList) return
+  els.torrentList.innerHTML = ''
+  if (!result) {
+    const empty = document.createElement('p')
+    empty.className = 'muted small'
+    empty.textContent = t('sources.noResults')
+    els.torrentList.appendChild(empty)
+    return
+  }
+
+  const row = document.createElement('article')
+  row.className = 'torrent-row'
+  const info = document.createElement('div')
+  const title = document.createElement('strong')
+  title.textContent = `${result.providerId} · ${result.quality || 'torrent'}`
+  const meta = document.createElement('span')
+  meta.textContent = `${t('catalog.size')}: ${formatBytes(result.sizeBytes)} · ${t('catalog.seeders')}: ${result.seeders ?? 0} · ${t('sources.duplicates', { count: result.variants?.length || 1 })}`
+  info.append(title, meta)
+
+  const button = document.createElement('button')
+  button.className = 'primary'
+  button.type = 'button'
+  button.textContent = t('buttons.import')
+  button.addEventListener('click', () => importSelectedSource(result))
+  row.append(info, button)
+  els.torrentList.appendChild(row)
+}
+
+function renderSourceResults(results = []) {
+  state.sourceResults = results
+  if (els.sourceCount) els.sourceCount.textContent = String(results.length)
+  if (!els.sourceResults) return
+  els.sourceResults.innerHTML = ''
+  if (results.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'muted small'
+    empty.textContent = t('sources.noResults')
+    els.sourceResults.appendChild(empty)
+    renderSelectedSource(null)
+    return
+  }
+
+  for (const result of results) {
+    const button = document.createElement('button')
+    button.className = 'poster-card'
+    button.type = 'button'
+    const thumb = document.createElement('span')
+    thumb.className = 'poster-thumb'
+    const img = document.createElement('img')
+    img.loading = 'lazy'
+    img.alt = ''
+    img.src = result.posterUrl || 'https://archive.org/services/img/Sintel'
+    const score = document.createElement('span')
+    score.className = 'poster-score'
+    score.textContent = `↑ ${result.seeders ?? 0}`
+    thumb.append(img, score)
+    const title = document.createElement('strong')
+    title.className = 'poster-title'
+    title.textContent = result.title
+    const meta = document.createElement('span')
+    meta.className = 'poster-meta'
+    meta.textContent = resultMeta(result)
+    button.append(thumb, title, meta)
+    button.addEventListener('click', () => renderSelectedSource(result))
+    els.sourceResults.appendChild(button)
+  }
+
+  renderSelectedSource(results[0])
+}
+
+async function searchCatalog() {
+  if (!window.torrgether?.searchSources) return
+  const query = els.sourceSearchInput?.value || ''
+  const response = await window.torrgether.searchSources({
+    query,
+    filters: { language: state.contentLanguage }
+  })
+  if (!response.ok) throw new Error(response.error || 'source search failed')
+  renderSourceResults(response.results || [])
+  if (els.languageNotice) {
+    els.languageNotice.classList.toggle('hidden', !response.languageFallback)
+    els.languageNotice.textContent = response.languageFallback
+      ? t('sources.languageFallback', { language: state.contentLanguage })
+      : ''
+  }
+}
+
+async function importSelectedSource(result = state.selectedSourceResult) {
+  if (!result) return
+  if (!state.isHost) return logT('log.hostOnly')
+  const imported = await window.torrgether.importSourceResult(result.id)
+  if (!imported.ok) return logT('sources.importFailed', { error: imported.error })
+  await hostSetTorrentPayload(imported.payload)
+}
+
+async function checkForUpdates({ quiet = false } = {}) {
+  if (!window.torrgether?.checkForUpdates || !els.updateBanner) return
+  const result = await window.torrgether.checkForUpdates()
+  if (!result.ok) {
+    if (!quiet) {
+      els.updateText.textContent = t('updates.error', { error: result.error || 'unknown' })
+      els.updateBanner.classList.remove('hidden')
+    }
+    return
+  }
+  if (!result.updateAvailable) {
+    if (!quiet && !result.disabled) {
+      els.updateText.textContent = t('updates.none')
+      els.updateBanner.classList.remove('hidden')
+    }
+    return
+  }
+  state.updateReleaseUrl = result.releaseUrl
+  els.updateText.textContent = t('updates.available', { version: result.latestVersion || result.tagName })
+  els.updateBanner.classList.remove('hidden')
 }
 
 async function pollExternalPlayerStatus() {
@@ -650,16 +843,20 @@ async function toggleMpv() {
 
 function updateSourceTabs() {
   const showRutracker = state.sourceTab === 'rutracker'
-  els.manualSourceTab.classList.toggle('active', !showRutracker)
+  const showManual = state.sourceTab === 'manual'
+  const showCatalog = state.sourceTab === 'catalog'
+  els.catalogSourceTab?.classList.toggle('active', showCatalog)
+  els.manualSourceTab.classList.toggle('active', showManual)
   els.rutrackerSourceTab.classList.toggle('active', showRutracker)
-  els.manualSourcePanel.classList.toggle('hidden', showRutracker)
+  els.catalogSourcePanel?.classList.toggle('hidden', !showCatalog)
+  els.manualSourcePanel.classList.toggle('hidden', !showManual)
   els.rutrackerPanel.classList.toggle('hidden', !showRutracker)
   if (showRutracker && state.rutrackerVisible) scheduleRutrackerBoundsUpdate()
   if (!showRutracker) hideRutrackerView()
 }
 
 function setSourceTab(tab) {
-  state.sourceTab = tab === 'rutracker' ? 'rutracker' : 'manual'
+  state.sourceTab = tab === 'rutracker' ? 'rutracker' : tab === 'manual' ? 'manual' : 'catalog'
   updateSourceTabs()
 }
 
@@ -714,13 +911,24 @@ async function importFromRutracker(imported) {
 }
 
 els.languageSelect?.addEventListener('change', () => setLocale(els.languageSelect.value))
+els.contentLanguageSelect?.addEventListener('change', () => setContentLanguage(els.contentLanguageSelect.value))
 document.querySelectorAll('[data-i18n-value]').forEach(el => {
   el.addEventListener('input', () => { el.dataset.userEdited = 'true' })
 })
 
 els.joinBtn.addEventListener('click', joinRoom)
+els.catalogSourceTab?.addEventListener('click', () => setSourceTab('catalog'))
 els.manualSourceTab.addEventListener('click', () => setSourceTab('manual'))
 els.rutrackerSourceTab.addEventListener('click', () => showRutrackerView())
+els.sourceSearchBtn?.addEventListener('click', () => searchCatalog().catch(err => logT('sources.importFailed', { error: err.message || err })))
+els.sourceSearchInput?.addEventListener('keydown', event => {
+  if (event.key === 'Enter') searchCatalog().catch(err => logT('sources.importFailed', { error: err.message || err }))
+})
+els.detailImportBtn?.addEventListener('click', () => importSelectedSource())
+els.updateActionBtn?.addEventListener('click', () => {
+  if (state.updateReleaseUrl) window.torrgether.openReleasePage(state.updateReleaseUrl)
+})
+els.updateDismissBtn?.addEventListener('click', () => els.updateBanner?.classList.add('hidden'))
 els.rutrackerOpenBtn.addEventListener('click', showRutrackerView)
 els.rutrackerCloseBtn.addEventListener('click', hideRutrackerView)
 els.rutrackerBackBtn.addEventListener('click', () => window.torrgether.rutrackerBack())
@@ -816,7 +1024,7 @@ if (window.ResizeObserver && els.rutrackerViewport) {
   new ResizeObserver(scheduleRutrackerBoundsUpdate).observe(els.rutrackerViewport)
 }
 
-setInterval(async () => {
+registerInterval(async () => {
   if (!state.isHost || !state.currentTorrent || !window.torrgether.socketConnected()) return
   if (state.heartbeatInFlight) return
   state.heartbeatInFlight = true
@@ -834,7 +1042,7 @@ setInterval(async () => {
   }
 }, 2000)
 
-setInterval(async () => {
+registerInterval(async () => {
   if (state.torrentStatusInFlight) return
   state.torrentStatusInFlight = true
   try {
@@ -871,7 +1079,7 @@ setInterval(async () => {
       mpv: mpvText
     })
     if (els.ramShortStatus) els.ramShortStatus.textContent = `${ramPercent.toFixed(0)}%`
-    if (els.cachePressureStatus) els.cachePressureStatus.textContent = t(pressureKey)
+    if (els.cachePressureStatus) els.cachePressureStatus.textContent = lowCache ? t('stream.starved') : t(pressureKey)
     if (els.evictionStatus) els.evictionStatus.textContent = String(status.ramEvictions ?? 0)
     if (els.refetchStatus) els.refetchStatus.textContent = String(status.ramRecoveries ?? 0)
     if (els.pendingStatus) els.pendingStatus.textContent = `${status.ramPendingReads ?? 0}/${status.ramMaxPendingReads ?? 'n/a'}`
@@ -883,7 +1091,7 @@ setInterval(async () => {
   }
 }, 1000)
 
-setInterval(async () => {
+registerInterval(async () => {
   if (!state.mpvActive && !state.externalStatus?.running && !state.externalStatus?.connected) return
   if (state.externalStatusIntervalInFlight) return
   state.externalStatusIntervalInFlight = true
@@ -950,5 +1158,8 @@ window.torrgether.onRutrackerStatus(payload => {
 })
 
 setLocale(state.locale)
+if (els.contentLanguageSelect) els.contentLanguageSelect.value = state.contentLanguage
 applyClientConfig().then(() => updateVideoInfo())
+searchCatalog().catch(err => logT('sources.importFailed', { error: err.message || err }))
+checkForUpdates({ quiet: true }).catch(() => {})
 updateActionState()

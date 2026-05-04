@@ -13,6 +13,8 @@ import { parseMpvStdoutStatus } from './mpvOutput.js'
 import { getMpvCandidates } from './mpvPaths.js'
 import { shouldDisableHardwareAcceleration } from './gpuPolicy.js'
 import { waitForReady } from './streamServerReady.js'
+import { fetchSourceTorrent, searchSources } from './sourceProviders.js'
+import { checkForUpdates, DEFAULT_UPDATE_REPO } from './updateCheck.js'
 import { createLogger, redactForLog } from '../shared/logger.js'
 import { startSignalingServer } from '../server/server.js'
 import {
@@ -61,6 +63,7 @@ let rutrackerView = null
 let rutrackerSession = null
 let rutrackerVisible = false
 let rutrackerBounds = null
+let sourceResultCache = new Map()
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.avi', '.ogv'])
 const MAX_TORRENT_FILE_BYTES = Number(process.env.MAX_TORRENT_FILE_BYTES || 10 * 1024 * 1024)
@@ -82,6 +85,9 @@ const MPV_IPC_ATTEMPTS = Number(process.env.MPV_IPC_ATTEMPTS || 100)
 const MPV_IPC_RETRY_MS = Number(process.env.MPV_IPC_RETRY_MS || 100)
 const PLAYER_LOG_MAX_LINES = 400
 const HEALTH_SNAPSHOT_INTERVAL_MS = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 30_000)
+const UPDATE_REPO = process.env.UPDATE_REPO || DEFAULT_UPDATE_REPO
+const UPDATE_CHECK_INTERVAL_MS = Number(process.env.UPDATE_CHECK_INTERVAL_MS || 6 * 60 * 60 * 1000)
+const DISABLE_UPDATE_CHECK = ['1', 'true', 'yes'].includes(String(process.env.DISABLE_UPDATE_CHECK || '').toLowerCase())
 let playerLogLines = []
 let mpvPreflight = null
 let healthSnapshotTimer = null
@@ -345,17 +351,53 @@ function sendToRenderer(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
 }
 
-function safeTempFilename(name) {
-  const clean = String(name || 'rutracker.torrent')
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 180)
-  return clean || 'rutracker.torrent'
-}
-
 function sendRutrackerImport(payload) {
   sendToRenderer('rutracker:import', payload)
+}
+
+async function cookieHeaderForUrl(url) {
+  const cookies = await getRutrackerSession().cookies.get({ url })
+  return cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ')
+}
+
+async function fetchTorrentToMemory(url, maxBytes = MAX_TORRENT_FILE_BYTES) {
+  const cookie = await cookieHeaderForUrl(url)
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Torrgether torrent importer',
+      ...(cookie ? { Cookie: cookie } : {})
+    }
+  })
+
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const length = Number(response.headers?.get?.('content-length'))
+  if (!validateTorrentDownloadSize(length, maxBytes)) {
+    throw new Error(`.torrent file is too large. Limit is ${(maxBytes / 1024 / 1024).toFixed(0)} MiB.`)
+  }
+
+  const chunks = []
+  let received = 0
+  if (response.body?.getReader) {
+    const reader = response.body.getReader()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = Buffer.from(value)
+      received += chunk.length
+      if (!validateTorrentDownloadSize(received, maxBytes)) {
+        try { await reader.cancel() } catch {}
+        throw new Error(`.torrent download exceeded ${(maxBytes / 1024 / 1024).toFixed(0)} MiB.`)
+      }
+      chunks.push(chunk)
+    }
+    return Buffer.concat(chunks)
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer())
+  if (!validateTorrentDownloadSize(buffer.length, maxBytes)) {
+    throw new Error(`.torrent download exceeded ${(maxBytes / 1024 / 1024).toFixed(0)} MiB.`)
+  }
+  return buffer
 }
 
 function importRutrackerMagnet(magnetURI) {
@@ -395,42 +437,18 @@ function handleRutrackerDownload(event, item) {
   const mimeType = item.getMimeType?.() || ''
 
   if (!isTorrentDownload({ url, filename, mimeType })) return
+  event.preventDefault()
 
   const totalBytes = item.getTotalBytes?.()
   if (!validateTorrentDownloadSize(totalBytes, MAX_TORRENT_FILE_BYTES)) {
-    event.preventDefault()
     sendToRenderer('torrent:error', { message: `.torrent file is too large. Limit is ${(MAX_TORRENT_FILE_BYTES / 1024 / 1024).toFixed(0)} MiB.` })
     return
   }
 
   const importName = importNameForTorrent({ filename, url })
-  const tempPath = path.join(os.tmpdir(), `torrgether-rutracker-${Date.now()}-${safeTempFilename(importName)}`)
-  item.setSavePath(tempPath)
-
-  const cancelIfOversized = () => {
-    const received = item.getReceivedBytes?.()
-    if (!validateTorrentDownloadSize(received, MAX_TORRENT_FILE_BYTES)) {
-      try { item.cancel() } catch {}
-      sendToRenderer('torrent:error', { message: `.torrent download exceeded ${(MAX_TORRENT_FILE_BYTES / 1024 / 1024).toFixed(0)} MiB and was canceled.` })
-    }
-  }
-
-  item.on('updated', cancelIfOversized)
-  item.once('done', async (_doneEvent, state) => {
-    item.off?.('updated', cancelIfOversized)
+  queueMicrotask(async () => {
     try {
-      if (state !== 'completed') {
-        if (state !== 'cancelled') sendToRenderer('torrent:error', { message: `RuTracker torrent download ${state}.` })
-        return
-      }
-
-      const stat = await fs.stat(tempPath)
-      if (!stat.isFile()) throw new Error('Downloaded torrent path is not a file')
-      if (!validateTorrentDownloadSize(stat.size, MAX_TORRENT_FILE_BYTES)) {
-        throw new Error(`.torrent file is too large. Limit is ${(MAX_TORRENT_FILE_BYTES / 1024 / 1024).toFixed(0)} MiB.`)
-      }
-
-      const buffer = await fs.readFile(tempPath)
+      const buffer = await fetchTorrentToMemory(url)
       sendRutrackerImport({
         kind: 'torrent-file',
         payload: {
@@ -441,8 +459,6 @@ function handleRutrackerDownload(event, item) {
       })
     } catch (err) {
       sendToRenderer('torrent:error', { message: `Could not import RuTracker torrent: ${err.message}` })
-    } finally {
-      await fs.rm(tempPath, { force: true }).catch(() => {})
     }
   })
 }
@@ -566,7 +582,7 @@ function createWindow() {
     height: 760,
     minWidth: 940,
     minHeight: 620,
-    title: 'Torrgether MVP',
+    title: 'Torrgether',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -861,7 +877,7 @@ function handleMpvLine(line) {
 }
 
 function mpvCommand(command, timeoutMs = 2500) {
-  if (!externalPlayer.socket || !externalPlayer.status.connected) {
+  if (!externalPlayer.socket || externalPlayer.socket.destroyed || !externalPlayer.status.connected) {
     return Promise.reject(new Error('MPV IPC is not connected'))
   }
 
@@ -876,6 +892,12 @@ function mpvCommand(command, timeoutMs = 2500) {
     }, timeoutMs)
 
     externalPlayer.pending.set(requestId, { resolve, reject, timer })
+    if (!externalPlayer.socket || externalPlayer.socket.destroyed || !externalPlayer.status.connected) {
+      clearTimeout(timer)
+      externalPlayer.pending.delete(requestId)
+      reject(new Error('MPV IPC closed before command could be sent'))
+      return
+    }
     externalPlayer.socket.write(payload, err => {
       if (!err) return
       clearTimeout(timer)
@@ -1354,6 +1376,9 @@ ipcMain.handle('app:config', async () => ({
   desktopLogPath: appLogger.filePath,
   mpvLogPath: mpvLogger.filePath,
   logLevel: appLogger.level,
+  updateRepo: UPDATE_REPO,
+  updateCheckIntervalMs: UPDATE_CHECK_INTERVAL_MS,
+  updateCheckDisabled: DISABLE_UPDATE_CHECK,
   mpv: mpvPreflight
 }))
 
@@ -1363,6 +1388,44 @@ ipcMain.handle('app:open-logs-folder', async () => {
 })
 
 ipcMain.handle('app:health', async () => ({ ok: true, health: getRuntimeHealthSnapshot() }))
+
+ipcMain.handle('app:update-check', async () => {
+  if (DISABLE_UPDATE_CHECK) return { ok: true, disabled: true, updateAvailable: false }
+  try {
+    return await checkForUpdates({
+      currentVersion: app.getVersion(),
+      repo: UPDATE_REPO,
+      fetchImpl: globalThis.fetch,
+      platform: process.platform
+    })
+  } catch (err) {
+    return { ok: false, updateAvailable: false, error: err.message }
+  }
+})
+
+ipcMain.handle('app:open-release-page', async (_event, url) => {
+  const target = String(url || `https://github.com/${UPDATE_REPO}/releases`).trim()
+  if (!/^https:\/\/github\.com\//i.test(target)) return { ok: false, error: 'Only GitHub release URLs can be opened' }
+  await shell.openExternal(target)
+  return { ok: true, url: target }
+})
+
+ipcMain.handle('sources:search', async (_event, { query, filters } = {}) => {
+  const result = await searchSources(query, filters, globalThis.fetch)
+  sourceResultCache = new Map(result.results.map(item => [item.id, item]))
+  return result
+})
+
+ipcMain.handle('sources:import', async (_event, resultId) => {
+  try {
+    const result = sourceResultCache.get(String(resultId || ''))
+    if (!result) throw new Error('Source result is not available anymore. Search again.')
+    const payload = await fetchSourceTorrent(result, globalThis.fetch, { maxBytes: MAX_TORRENT_FILE_BYTES })
+    return { ok: true, payload }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+})
 
 ipcMain.handle('rutracker:show', async () => {
   try {

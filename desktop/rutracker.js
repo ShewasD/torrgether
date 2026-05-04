@@ -4,9 +4,7 @@ export const MAX_RUTRACKER_TORRENT_BYTES = 10 * 1024 * 1024
 
 const TORRENT_MIME_TYPES = new Set([
   'application/x-bittorrent',
-  'application/octet-stream',
-  'application/download',
-  'binary/octet-stream'
+  'application/download'
 ])
 
 export function toSafeUrl(value) {
@@ -48,7 +46,8 @@ export function isTorrentDownload({ url, mimeType, filename } = {}) {
 
 export function validateTorrentDownloadSize(bytes, maxBytes = MAX_RUTRACKER_TORRENT_BYTES) {
   const size = Number(bytes)
-  if (!Number.isFinite(size) || size < 0) return true
+  if (!Number.isFinite(size)) return true
+  if (size < 0) return false
   return size <= maxBytes
 }
 

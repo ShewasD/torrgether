@@ -33,6 +33,11 @@ test('detects torrent downloads by filename or supported torrent MIME', () => {
 test('validates torrent download size and derives an import name', () => {
   assert.equal(validateTorrentDownloadSize(10, 10), true)
   assert.equal(validateTorrentDownloadSize(11, 10), false)
-  assert.equal(validateTorrentDownloadSize(-1, 10), true)
+  assert.equal(validateTorrentDownloadSize(-1, 10), false)
   assert.equal(importNameForTorrent({ filename: '', url: 'https://rutracker.org/files/demo.torrent' }), 'demo.torrent')
+})
+
+test('rejects generic binary MIME without torrent filename', () => {
+  assert.equal(isTorrentDownload({ url: 'https://rutracker.org/files/movie.bin', mimeType: 'application/octet-stream' }), false)
+  assert.equal(isTorrentDownload({ url: 'https://rutracker.org/files/movie.torrent', mimeType: 'application/octet-stream' }), true)
 })

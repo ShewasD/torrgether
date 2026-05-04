@@ -13,12 +13,13 @@ test('system locale resolves to supported app locales', () => {
   assert.equal(normalizeLocale('ru-RU'), 'ru')
   assert.equal(normalizeLocale('zh-Hans-CN'), 'zh-CN')
   assert.equal(normalizeLocale('ja-JP'), 'ja')
-  assert.equal(normalizeLocale('fr-FR'), 'en')
+  assert.equal(normalizeLocale('fr-FR'), 'fr')
+  assert.equal(normalizeLocale('pt-BR'), 'pt-BR')
 })
 
 test('stored locale wins and unsupported locales fall back to English', () => {
   assert.equal(resolveInitialLocale({ storedLocale: 'ja', systemLocale: 'ru-RU' }), 'ja')
-  assert.equal(resolveInitialLocale({ storedLocale: 'de', systemLocale: 'ru-RU' }), 'ru')
-  assert.equal(translate('de', 'room.title'), 'Room')
+  assert.equal(resolveInitialLocale({ storedLocale: 'de', systemLocale: 'ru-RU' }), 'de')
+  assert.equal(translate('xx', 'room.title'), 'Room')
   assert.equal(translate('ru', 'status.online', { id: 'abc' }), 'онлайн (abc)')
 })
