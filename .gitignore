@@ -1,0 +1,9 @@
+.tools/
+node_modules/
+dist/
+logs/
+*.log
+npm-debug.log*
+yarn-error.log*
+*.tmp
+*.bak

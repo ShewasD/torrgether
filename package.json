@@ -1,0 +1,118 @@
+{
+  "name": "torrgether-mvp",
+  "version": "0.2.0",
+  "description": "Legal co-watching MVP with Windows MPV support, public signaling server config, redacted logs, and RAM-only torrent streaming.",
+  "author": "Torrgether contributors",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.js",
+  "scripts": {
+    "server": "node server/server.js",
+    "client": "electron desktop/main.js",
+    "start": "electron desktop/main.js",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "check": "node --check server/server.js && node --check desktop/main.js && node --check desktop/preload.cjs && node --check renderer/renderer.js",
+    "lint": "eslint .",
+    "test": "node --test",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win nsis",
+    "dist:linux": "electron-builder --linux AppImage deb"
+  },
+  "build": {
+    "appId": "com.torrgether.app",
+    "productName": "Torrgether",
+    "directories": {
+      "output": "dist"
+    },
+    "npmRebuild": false,
+    "files": [
+      "desktop/**/*",
+      "renderer/**/*",
+      "server/**/*",
+      "shared/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "extraResources": [
+        {
+          "from": "build/install-mpv.ps1",
+          "to": "install-mpv.ps1"
+        },
+        {
+          "from": "node_modules/7zip-bin/win/x64/7za.exe",
+          "to": "bin/7za.exe"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "AudioVideo",
+      "artifactName": "${productName}-${version}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "mpv"
+      ]
+    }
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "webtorrent": "^2.8.5"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "electron": "^38.3.0",
+    "electron-builder": "^26.0.12",
+    "eslint": "^9.0.0"
+  }
+}
