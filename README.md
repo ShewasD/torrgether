@@ -1,35 +1,27 @@
 # Torrgether
 
-Torrgether is a desktop app for synchronized watching of legal torrent video.
-Each participant streams the video locally; the signaling server syncs rooms,
-torrent selection, and playback commands.
+Torrgether is a desktop app for watching legal torrent video together. The app
+keeps media chunks in RAM, launches MPV as the only playback engine, and uses a
+small signaling server to sync rooms, torrent selection, host failover, and
+playback commands.
 
-MPV is the only playback engine. The old browser `<video>` fallback was removed
-because it could not reliably play AVI/MKV streams and made runtime failures
-harder to diagnose.
+## What Is New In 0.3
 
-## Highlights
+- Catalog-style desktop UI with search, posters, source results, torrent detail
+  rows, room controls, MPV controls, RAM cache status, participants, and logs.
+- Source provider layer with duplicate collapsing by info hash, magnet `btih`,
+  or normalized title/size/quality metadata.
+- Open-license catalog support through local curated entries and Archive.org
+  search. RuTracker remains an optional isolated browser panel.
+- In-app GitHub release update checks for `ShewasD/torrgether`.
+- Larger locale set for the interface plus a separate content/audio language
+  filter with fallback warnings when no matching audio language is found.
+- Bounded log rotation, stricter auth/token/CORS checks, safer torrent download
+  validation, and RAM-only `.torrent` import from the embedded tracker panel.
 
-- Windows and Linux are the primary targets.
-- Packaged Windows builds use an assisted NSIS wizard.
-- Windows installer downloads MPV during installation and adds Torrgether plus
-  its bundled tools to the System PATH.
-- Linux builds target AppImage and deb. The deb package depends on `mpv`.
-- Source installers can download portable Node.js and install dependencies.
-- Torrent media chunks stay in RAM through `desktop/LruMemoryChunkStore.js`.
-- RAM cache eviction now keeps a low-watermark safety buffer and can refetch
-  recently evicted pieces instead of ending the MPV stream early.
-- The renderer includes English, Russian, Simplified Chinese, and Japanese UI
-  strings with automatic system-locale selection and a manual language switcher.
-- Hosts can open RuTracker inside an isolated Electron panel and import magnet
-  links or `.torrent` downloads into the existing room flow.
-- Logs are written to `desktop.log`, `server.log`, and `mpv.log`.
+## Install
 
-## Quick Start From Source
-
-### Windows
-
-Run PowerShell or Command Prompt from the repository root:
+### Windows From Source
 
 ```powershell
 .\install.cmd -Run -InstallMpv
@@ -43,142 +35,162 @@ Useful options:
 .\install.cmd -AddToUserPath
 .\install.cmd -AddToSystemPath
 .\install.cmd -InstallMpv -AddToSystemPath -Run
+.\install.cmd -BuildWin
 ```
 
-`-AddToSystemPath` requires elevation because it writes Machine PATH.
-`-AddToUserPath` is kept for compatibility and only changes the current user.
+`-AddToSystemPath` requires Administrator. The installer pins portable Node to
+`v24.15.0` unless `TORRGETHER_NODE_VERSION` is set.
 
-### Linux
+### Linux From Source
 
 ```bash
 chmod +x install.sh start-client.sh start-server.sh
 ./install.sh --install-mpv --system-path --run
 ```
 
-`--install-mpv` supports `apt`, `dnf`, `pacman`, and `zypper`. The script asks
-before running `sudo`. `--system-path` creates `/usr/local/bin/torrgether`.
-
-## Packaged Install
-
-### Windows
-
-Build the installer:
-
-```powershell
-.\install.cmd -BuildWin
-```
-
-Then run `dist/Torrgether-Setup-<version>.exe`. The wizard installs the app,
-downloads the current regular `mpv-x86_64` archive from
-`zhongfly/mpv-winbuild`, verifies `sha256.txt`, extracts MPV into
-`resources\bin`, validates `mpv.exe --version`, and updates System PATH.
-
-Uninstall removes only the exact PATH entries that the installer added.
-
-### Linux
-
-Build AppImage and deb targets:
+Build packages:
 
 ```bash
 ./install.sh --build-linux
 ```
 
-The deb package declares `mpv` as a dependency. For AppImage/source use,
-install MPV with your package manager or run:
+Cross-building the Windows installer from Linux requires Wine. Without Wine,
+`./install.sh --build-win` exits with a clear error.
 
-```bash
-./install.sh --install-mpv
-```
+## Packaged Builds
 
-## Runtime Behavior
+GitHub tag pushes matching `v*` run `.github/workflows/release.yml`. The release
+workflow builds and uploads:
 
-- Selecting a torrent or local media starts MPV automatically.
-- Play, pause, seek, back, and forward commands go through MPV IPC.
-- Host heartbeat uses MPV status. If MPV is not running, playback is treated as
-  paused.
-- Startup and torrent playback run MPV preflight checks. If MPV is missing, the
-  UI shows a blocking status with the log path and reinstall instructions.
-- Active playback writes a health snapshot every 30 seconds.
-- Default MPV cache/read-ahead is 60 seconds to reduce RAM pressure.
-- Default MPV demuxer memory is derived from the RAM cache budget and capped at
-  256 MiB unless `MPV_DEMUXER_MAX_BYTES` is set.
-- RuTracker is embedded as a separate sandboxed browser surface, not an iframe;
-  navigation is limited to RuTracker and external links open in the system
-  browser. Users sign in themselves, and only selected magnet/`.torrent` actions
-  are imported.
+- `Torrgether-Setup-<version>.exe`
+- `Torrgether-<version>.AppImage`
+- `Torrgether-<version>.deb`
 
-## Logs
-
-Common log locations:
-
-- Packaged Windows: `%LOCALAPPDATA%\Torrgether\logs`
-- Source/dev: `logs` or `LOG_DIR` when set
-
-Useful files:
-
-- `desktop.log`: Electron app lifecycle, crashes, MPV preflight, health snapshots
-- `server.log`: signaling server state
-- `mpv.log`: MPV playback diagnostics
-
-The app logs `render-process-gone`, `child-process-gone`, `unresponsive`,
-`before-quit`, `will-quit`, and process exit events.
+The app checks the latest GitHub release and opens the release page when an
+update is available.
 
 ## Configuration
 
-Common client environment variables:
+Copy `.env.example` and set only the values you need.
+
+Common client variables:
 
 ```bash
-SERVER_URL=https://watch.example.com
+SERVER_URL=http://localhost:3000
 SERVER_TOKEN=long-random-token
 MPV_PATH=/custom/path/to/mpv
 MAX_MEMORY_MB=512
 MAX_MEMORY_CHUNKS=384
-MAX_PENDING_RAM_READS=256
-RAM_STORE_LOW_WATERMARK_RATIO=0.85
-RAM_STORE_RECENT_EVICTION_TTL_MS=120000
-RAM_STORE_MAX_RECENT_EVICTIONS=4096
-MPV_CACHE_SECS=60
-HEALTH_SNAPSHOT_INTERVAL_MS=30000
+CONTENT_AUDIO_LANGUAGE=any
+UPDATE_REPO=ShewasD/torrgether
+UPDATE_CHECK_INTERVAL_MS=21600000
 LOG_LEVEL=info
-LOG_DIR=./logs
+LOG_MAX_BYTES=5242880
+LOG_MAX_FILES=5
 ```
 
-Common server environment variables:
+Common server variables:
 
 ```bash
 HOST=0.0.0.0
 PORT=3000
 PUBLIC_URL=https://watch.example.com
-CORS_ORIGIN=*
+CORS_ORIGIN=https://watch.example.com
 SERVER_TOKEN=long-random-token
 ROOM_EMPTY_TTL_MS=300000
-LOG_LEVEL=info
-LOG_DIR=./logs
 ```
+
+For production, set `SERVER_TOKEN` and restrict `CORS_ORIGIN`. `CORS_ORIGIN=*`
+is only appropriate for local development.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Renderer["Renderer UI"] --> Preload["Preload bridge"]
+  Preload --> Main["Electron main"]
+  Main --> WebTorrent["WebTorrent RAM store"]
+  Main --> MPV["MPV IPC"]
+  Main --> Tracker["Optional tracker panel"]
+  Renderer --> Socket["Socket.IO client"]
+  Socket --> Server["Signaling server"]
+  Server --> Rooms["Room state and host failover"]
+```
+
+The local WebTorrent HTTP server binds to `127.0.0.1`; MPV reads from that local
+URL. Torrent media chunks are stored in `desktop/LruMemoryChunkStore.js`, not in
+a disk cache.
+
+## Security Model
+
+- MPV is the only player. Browser `<video>` playback is intentionally absent.
+- `.torrent` payloads imported from embedded tracker downloads are fetched into
+  memory and sent to the renderer as base64; no temporary `.torrent` file is
+  written for that flow.
+- The RuTracker surface is an Electron `WebContentsView` with
+  `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`, and
+  navigation limited to RuTracker top-level URLs. External links open in the
+  system browser.
+- Server token checks compare SHA-256 digests with `timingSafeEqual`.
+- Auth rate limiting has expiry cleanup and a maximum key count.
+- Logs redact tokens, passwords, magnet URIs, base64 payloads, and local paths.
+
+## RAM-Only Policy
+
+RAM-only means torrent media chunks and embedded `.torrent` imports are not
+cached to disk. Build outputs, release installers, package-manager caches, OS
+logs, and bounded application logs are normal files.
+
+Relevant controls:
+
+```bash
+MAX_MEMORY_MB=512
+MAX_MEMORY_CHUNKS=384
+RAM_STORE_LOW_WATERMARK_RATIO=0.85
+MAX_PENDING_RAM_READS=256
+MPV_CACHE_SECS=60
+MPV_DEMUXER_MAX_BYTES=
+```
+
+When RAM pressure is high, the store evicts old chunks, marks evicted pieces
+unverified, and lets WebTorrent refetch them instead of ending MPV's stream
+early.
 
 ## Development
 
-Use the local Node toolchain if global `node`/`npm` is not available:
+If global Node/npm is unavailable, use the portable toolchain:
 
 ```powershell
 $env:PATH = "$PWD\.tools\node;$env:PATH"
 .\.tools\node\npm.cmd run check
-.\.tools\node\npm.cmd run lint
 .\.tools\node\npm.cmd test
 ```
 
-Release checks:
+In locked-down Windows environments where `.tools\node\node.exe` returns
+`Access is denied`, use another Node 20+ install or the Codex bundled runtime.
+
+Standard checks:
 
 ```bash
 npm run check
 npm run lint
 npm test
-powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Help
-bash -n install.sh
+npm run pack
 ```
+
+## Troubleshooting
+
+- MPV missing: run `.\install.cmd -InstallMpv` on Windows or
+  `./install.sh --install-mpv` on Linux.
+- Installer launches an old app: uninstall old builds first, then install the
+  latest `Torrgether-Setup-<version>.exe` from GitHub Releases.
+- No public server access: set `PUBLIC_URL`, `CORS_ORIGIN`, and `SERVER_TOKEN`
+  on the signaling server.
+- Playback stalls: lower `MPV_CACHE_SECS`, lower video quality, or increase
+  `MAX_MEMORY_MB` if the machine has enough RAM.
 
 ## Legal Use
 
-Use only content that you are allowed to distribute and watch, such as your own
-recordings, public-domain video, open-license films, or private torrents where
-you have access rights.
+Use only content that you are allowed to distribute and watch: your own videos,
+public-domain films, open-license media, Linux ISOs, private torrents, or other
+content where you have the required rights.

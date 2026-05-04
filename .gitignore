@@ -7,3 +7,8 @@ npm-debug.log*
 yarn-error.log*
 *.tmp
 *.bak
+*.exe
+*.AppImage
+*.deb
+.DS_Store
+Thumbs.db

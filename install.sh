@@ -4,7 +4,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOLS_DIR="$ROOT/.tools"
 NODE_DIR="$TOOLS_DIR/node"
-NODE_BASE_URL="https://nodejs.org/dist/latest-v24.x"
+NODE_VERSION="${TORRGETHER_NODE_VERSION:-v24.15.0}"
+NODE_BASE_URL="https://nodejs.org/dist/$NODE_VERSION"
+TMPDIR_TO_CLEAN=""
+
+cleanup_tmp() {
+  if [[ -n "$TMPDIR_TO_CLEAN" && -d "$TMPDIR_TO_CLEAN" ]]; then
+    rm -rf "$TMPDIR_TO_CLEAN"
+  fi
+}
+trap cleanup_tmp EXIT
 
 RUN=0
 BUILD_LINUX=0
@@ -40,15 +49,23 @@ download() {
 }
 
 install_portable_node() {
+  case "$(uname -m)" in
+    x86_64|amd64) node_platform="linux-x64" ;;
+    aarch64|arm64) node_platform="linux-arm64" ;;
+    *) echo "Unsupported Linux architecture for portable Node: $(uname -m)" >&2; exit 1 ;;
+  esac
+
   mkdir -p "$TOOLS_DIR"
   tmp="$TOOLS_DIR/node-download"
+  TMPDIR_TO_CLEAN="$tmp"
   rm -rf "$tmp"
   mkdir -p "$tmp"
 
   download "$NODE_BASE_URL/SHASUMS256.txt" "$tmp/SHASUMS256.txt"
-  entry="$(grep -E 'node-v.*-linux-x64\.tar\.xz$' "$tmp/SHASUMS256.txt" | head -n 1)"
+  node_version_no_v="${NODE_VERSION#v}"
+  entry="$(grep -E "node-v${node_version_no_v}-${node_platform}\.tar\.xz$" "$tmp/SHASUMS256.txt" | head -n 1 || true)"
   if [[ -z "$entry" ]]; then
-    echo "Could not find Linux x64 Node tarball in SHASUMS256.txt" >&2
+    echo "Could not find $node_platform Node tarball for $NODE_VERSION in SHASUMS256.txt" >&2
     exit 1
   fi
 
@@ -65,7 +82,7 @@ install_portable_node() {
   fi
 
   tar -xJf "$archive" -C "$tmp"
-  expanded="$(find "$tmp" -maxdepth 1 -type d -name 'node-v*-linux-x64' | head -n 1)"
+  expanded="$(find "$tmp" -maxdepth 1 -type d -name "node-v*-${node_platform}" | head -n 1)"
   if [[ -z "$expanded" ]]; then
     echo "Node archive did not contain the expected directory" >&2
     exit 1
@@ -74,10 +91,22 @@ install_portable_node() {
   rm -rf "$NODE_DIR"
   mv "$expanded" "$NODE_DIR"
   rm -rf "$tmp"
+  TMPDIR_TO_CLEAN=""
+}
+
+detect_shell_profile() {
+  shell_name="$(basename "${SHELL:-}")"
+  case "$shell_name" in
+    zsh) printf '%s\n' "$HOME/.zshrc" ;;
+    bash)
+      if [[ -f "$HOME/.bashrc" ]]; then printf '%s\n' "$HOME/.bashrc"; else printf '%s\n' "$HOME/.bash_profile"; fi
+      ;;
+    *) printf '%s\n' "$HOME/.profile" ;;
+  esac
 }
 
 add_user_path() {
-  profile="$HOME/.profile"
+  profile="$(detect_shell_profile)"
   marker_start="# >>> Torrgether portable Node PATH >>>"
   marker_end="# <<< Torrgether portable Node PATH <<<"
 
@@ -159,6 +188,7 @@ add_system_path_wrapper() {
   fi
 
   confirm_sudo_action "Create /usr/local/bin/torrgether wrapper now?" || return 1
+  chmod +x "$ROOT/start-client.sh"
   tmp_wrapper="$(mktemp)"
   cat > "$tmp_wrapper" <<EOF_WRAPPER
 #!/usr/bin/env bash
@@ -194,6 +224,12 @@ fi
 
 if [[ "$SYSTEM_PATH" == "1" ]]; then
   add_system_path_wrapper
+fi
+
+if [[ "$BUILD_WIN" == "1" ]] && ! command -v wine >/dev/null 2>&1; then
+  echo "--build-win requires Wine when cross-building the Windows installer on Linux." >&2
+  echo "Install wine or build the NSIS installer on Windows with .\\install.cmd -BuildWin." >&2
+  exit 1
 fi
 
 echo "Using Node: $(node --version)"

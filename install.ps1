@@ -13,7 +13,8 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ToolsDir = Join-Path $Root '.tools'
 $NodeDir = Join-Path $ToolsDir 'node'
-$NodeBaseUrl = 'https://nodejs.org/dist/latest-v24.x'
+$NodeVersion = if ($env:TORRGETHER_NODE_VERSION) { $env:TORRGETHER_NODE_VERSION } else { 'v24.15.0' }
+$NodeBaseUrl = "https://nodejs.org/dist/$NodeVersion"
 
 if ($Help) {
   Write-Host @"
@@ -151,7 +152,12 @@ function Add-ToSystemPath {
 [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
 public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
 '@
-  $type = Add-Type -MemberDefinition $signature -Name Win32SendMessageTimeout -Namespace TorrgetherInstall -PassThru
+  $existingType = ([System.Management.Automation.PSTypeName]'TorrgetherInstall.Win32SendMessageTimeout').Type
+  $type = if ($existingType) {
+    $existingType
+  } else {
+    Add-Type -MemberDefinition $signature -Name Win32SendMessageTimeout -Namespace TorrgetherInstall -PassThru
+  }
   $result = [UIntPtr]::Zero
   [void]$type::SendMessageTimeout([IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, 'Environment', 0x2, 5000, [ref]$result)
   Write-Host "Added to System PATH: $fullPath"
@@ -161,19 +167,19 @@ function Invoke-MpvInstall {
   $helper = Join-Path $Root 'build\install-mpv.ps1'
   if (-not (Test-Path $helper)) { throw "MPV installer helper is missing: $helper" }
   $sevenZip = Join-Path $Root 'node_modules\7zip-bin\win\x64\7za.exe'
-  $args = @(
+  $psArgs = @(
     '-NoProfile',
     '-ExecutionPolicy', 'Bypass',
     '-File', $helper,
     '-InstallDir', $Root
   )
   if (Test-Path $sevenZip) {
-    $args += @('-SevenZipPath', $sevenZip)
+    $psArgs += @('-SevenZipPath', $sevenZip)
   }
   if ($AddToSystemPath) {
-    $args += '-AddToSystemPath'
+    $psArgs += '-AddToSystemPath'
   }
-  & powershell.exe @args
+  & powershell.exe @psArgs
   if ($LASTEXITCODE -ne 0) { throw "MPV install failed with exit code $LASTEXITCODE" }
 }
 

@@ -3,11 +3,13 @@ const nodeGlobals = {
   clearInterval: 'readonly',
   clearTimeout: 'readonly',
   console: 'readonly',
+  fetch: 'readonly',
   process: 'readonly',
   queueMicrotask: 'readonly',
   setInterval: 'readonly',
   setTimeout: 'readonly',
-  URL: 'readonly'
+  URL: 'readonly',
+  URLSearchParams: 'readonly'
 }
 
 const browserGlobals = {

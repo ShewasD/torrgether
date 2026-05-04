@@ -8,6 +8,8 @@ const LEVELS = new Map([
   ['warn', 30],
   ['error', 40]
 ])
+const DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024
+const DEFAULT_LOG_MAX_FILES = 5
 
 function normalizeLevel(level) {
   const value = String(level || '').toLowerCase()
@@ -64,6 +66,28 @@ function redactString(value, key = '', env = process.env) {
   return redactPath(result, env)
 }
 
+function parsePositiveInt(value, fallback) {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : fallback
+}
+
+function rotatedPath(filePath, index) {
+  return `${filePath}.${index}`
+}
+
+function rotateLogFiles(filePath, maxFiles) {
+  if (maxFiles <= 0) return
+  try {
+    if (fs.existsSync(rotatedPath(filePath, maxFiles))) fs.rmSync(rotatedPath(filePath, maxFiles), { force: true })
+    for (let index = maxFiles - 1; index >= 1; index -= 1) {
+      const from = rotatedPath(filePath, index)
+      const to = rotatedPath(filePath, index + 1)
+      if (fs.existsSync(from)) fs.renameSync(from, to)
+    }
+    if (fs.existsSync(filePath)) fs.renameSync(filePath, rotatedPath(filePath, 1))
+  } catch {}
+}
+
 export function redactForLog(value, key = '', env = process.env, seen = new WeakSet()) {
   if (value == null) return value
   if (typeof value === 'string') return redactString(value, key, env)
@@ -96,19 +120,32 @@ export function createLogger({
   fileName = `${name}.log`,
   logDir = defaultLogDir(),
   level = process.env.LOG_LEVEL,
+  maxBytes = process.env.LOG_MAX_BYTES,
+  maxFiles = process.env.LOG_MAX_FILES,
   consoleOutput = true,
   env = process.env
 }) {
   const effectiveLevel = normalizeLevel(level)
   const threshold = LEVELS.get(effectiveLevel)
+  const effectiveMaxBytes = parsePositiveInt(maxBytes, DEFAULT_LOG_MAX_BYTES)
+  const effectiveMaxFiles = parsePositiveInt(maxFiles, DEFAULT_LOG_MAX_FILES)
   fs.mkdirSync(logDir, { recursive: true })
   const filePath = path.join(logDir, fileName)
-  const stream = fs.createWriteStream(filePath, { flags: 'a', encoding: 'utf8' })
+  try {
+    const stat = fs.existsSync(filePath) ? fs.statSync(filePath) : null
+    if (stat?.size >= effectiveMaxBytes) rotateLogFiles(filePath, effectiveMaxFiles)
+  } catch {}
+  let currentBytes = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0
+  let stream = fs.createWriteStream(filePath, { flags: 'a', encoding: 'utf8' })
   let streamClosed = false
 
-  stream.on('error', err => {
-    if (consoleOutput) console.error(`[logger:${name}] failed to write ${filePath}: ${err.message}`)
-  })
+  function attachStreamErrorHandler() {
+    stream.on('error', err => {
+      if (consoleOutput) console.error(`[logger:${name}] failed to write ${filePath}: ${err.message}`)
+    })
+  }
+
+  attachStreamErrorHandler()
 
   function shouldLog(messageLevel) {
     return LEVELS.get(messageLevel) >= threshold
@@ -124,7 +161,18 @@ export function createLogger({
     }
     if (data !== undefined) payload.data = redactForLog(data, '', env)
     const line = JSON.stringify(payload)
-    if (!streamClosed && !stream.destroyed) stream.write(`${line}\n`)
+    const output = `${line}\n`
+    if (!streamClosed && !stream.destroyed) {
+      if (currentBytes + Buffer.byteLength(output) > effectiveMaxBytes) {
+        try { stream.end() } catch {}
+        rotateLogFiles(filePath, effectiveMaxFiles)
+        stream = fs.createWriteStream(filePath, { flags: 'a', encoding: 'utf8' })
+        attachStreamErrorHandler()
+        currentBytes = 0
+      }
+      stream.write(output)
+      currentBytes += Buffer.byteLength(output)
+    }
     if (consoleOutput) {
       const consoleLine = `[${payload.ts}] [${messageLevel}] [${name}] ${payload.message}`
       const target = messageLevel === 'error' ? console.error : messageLevel === 'warn' ? console.warn : console.log
@@ -149,6 +197,8 @@ export function createLogger({
     level: effectiveLevel,
     dir: logDir,
     filePath,
+    maxBytes: effectiveMaxBytes,
+    maxFiles: effectiveMaxFiles,
     debug: (message, data) => write('debug', message, data),
     info: (message, data) => write('info', message, data),
     warn: (message, data) => write('warn', message, data),

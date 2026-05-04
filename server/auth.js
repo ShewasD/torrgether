@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'crypto'
 
 const DEFAULT_AUTH_RATE_LIMIT_WINDOW_MS = 60_000
 const DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS = 20
+const DEFAULT_AUTH_RATE_LIMIT_MAX_ENTRIES = 5000
 
 function tokenValue(value) {
   if (Array.isArray(value)) return tokenValue(value[0])
@@ -21,11 +22,10 @@ export function tokenFromHandshake(handshake = {}) {
   )
 }
 
-function safeTokenEqual(actual, expected) {
-  const actualBuffer = Buffer.from(String(actual || ''))
-  const expectedBuffer = Buffer.from(String(expected || ''))
-  if (actualBuffer.length !== expectedBuffer.length) return false
-  return timingSafeEqual(actualBuffer, expectedBuffer)
+export function safeTokenEqual(actual, expected) {
+  const actualDigest = createHash('sha256').update(String(actual || '')).digest()
+  const expectedDigest = createHash('sha256').update(String(expected || '')).digest()
+  return timingSafeEqual(actualDigest, expectedDigest)
 }
 
 export function isServerTokenAuthorized(serverToken, handshake = {}) {
@@ -45,6 +45,7 @@ function handshakeAddress(handshake = {}) {
 export function createAuthRateLimiter({
   maxAttempts = DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS,
   windowMs = DEFAULT_AUTH_RATE_LIMIT_WINDOW_MS,
+  maxEntries = DEFAULT_AUTH_RATE_LIMIT_MAX_ENTRIES,
   now = () => Date.now()
 } = {}) {
   const attempts = new Map()
@@ -53,12 +54,28 @@ export function createAuthRateLimiter({
     return `${handshakeAddress(handshake)}:${tokenFingerprint(handshake)}`
   }
 
+  function cleanupExpired(current = now()) {
+    for (const [entryKey, entry] of attempts) {
+      if (current >= entry.resetAt) attempts.delete(entryKey)
+    }
+  }
+
+  function trimOldest() {
+    while (attempts.size > maxEntries) {
+      const oldest = attempts.keys().next().value
+      if (oldest == null) break
+      attempts.delete(oldest)
+    }
+  }
+
   function getEntry(key) {
     const current = now()
+    if (attempts.size >= maxEntries) cleanupExpired(current)
     const existing = attempts.get(key)
     if (!existing || current >= existing.resetAt) {
       const next = { count: 0, resetAt: current + windowMs }
       attempts.set(key, next)
+      trimOldest()
       return next
     }
     return existing
@@ -78,6 +95,12 @@ export function createAuthRateLimiter({
       attempts.delete(keyFor(handshake))
     },
     size() {
+      cleanupExpired()
+      return attempts.size
+    },
+    cleanup() {
+      cleanupExpired()
+      trimOldest()
       return attempts.size
     }
   }

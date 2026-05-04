@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createAuthRateLimiter, createTokenAuthMiddleware, isServerTokenAuthorized, tokenFromHandshake } from '../server/auth.js'
+import { createAuthRateLimiter, createTokenAuthMiddleware, isServerTokenAuthorized, safeTokenEqual, tokenFromHandshake } from '../server/auth.js'
 import { MAX_CLIENT_ID_LENGTH, createSocketIoOptions, normalizeClientId } from '../server/server.js'
 
 test('allows all sockets when server token is not configured', () => {
@@ -16,6 +16,12 @@ test('accepts token from auth, query, or bearer header', () => {
 test('rejects missing or wrong server token', () => {
   assert.equal(isServerTokenAuthorized('secret', {}), false)
   assert.equal(isServerTokenAuthorized('secret', { auth: { serverToken: 'wrong' } }), false)
+})
+
+test('safe token comparison accepts different input lengths without throwing', () => {
+  assert.equal(safeTokenEqual('secret', 'secret'), true)
+  assert.equal(safeTokenEqual('x', 'secret'), false)
+  assert.equal(safeTokenEqual('', 'secret'), false)
 })
 
 test('extracts x-server-token header', () => {
@@ -53,6 +59,24 @@ test('auth rate limiter bounds invalid attempts without storing raw tokens', () 
 
   time += 101
   assert.equal(limiter.isLimited(handshake), false)
+})
+
+test('auth rate limiter cleans expired entries and caps total keys', () => {
+  let time = 1000
+  const limiter = createAuthRateLimiter({
+    maxAttempts: 2,
+    maxEntries: 2,
+    windowMs: 100,
+    now: () => time
+  })
+
+  limiter.recordFailure({ address: '1.1.1.1', auth: { serverToken: 'a' } })
+  limiter.recordFailure({ address: '1.1.1.2', auth: { serverToken: 'b' } })
+  limiter.recordFailure({ address: '1.1.1.3', auth: { serverToken: 'c' } })
+  assert.equal(limiter.size(), 2)
+
+  time += 101
+  assert.equal(limiter.cleanup(), 0)
 })
 
 test('token auth middleware rate limits repeated invalid tokens', async () => {

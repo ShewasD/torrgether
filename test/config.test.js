@@ -6,6 +6,8 @@ test('normalizes public URLs and strips trailing slash', () => {
   assert.equal(normalizePublicUrl('watch.example.com/'), 'http://watch.example.com')
   assert.equal(normalizePublicUrl('https://watch.example.com/'), 'https://watch.example.com')
   assert.equal(normalizePublicUrl(''), null)
+  assert.throws(() => normalizePublicUrl('javascript:alert(1)'), /Unsupported public URL protocol/)
+  assert.throws(() => normalizePublicUrl('data:text/html,hello'), /Unsupported public URL protocol/)
 })
 
 test('parses public server config from environment', () => {
@@ -37,5 +39,7 @@ test('formats local and public server URLs', () => {
 
 test('parses wildcard and comma separated CORS origins', () => {
   assert.equal(parseCorsOrigin('*'), '*')
+  assert.deepEqual(parseCorsOrigin('', 'https://watch.example.com'), ['https://watch.example.com'])
+  assert.deepEqual(parseCorsOrigin(''), [])
   assert.deepEqual(parseCorsOrigin('https://a.test,https://b.test'), ['https://a.test', 'https://b.test'])
 })
