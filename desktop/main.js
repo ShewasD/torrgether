@@ -77,7 +77,6 @@ const MPV_RESERVED_BYTES = parseByteSize(MPV_DEMUXER_MAX_BYTES, 24 * 1024 * 1024
 const DEFAULT_RAM_STORE_MAX_BYTES = Math.max(64 * 1024 * 1024, (MAX_MEMORY_MB * 1024 * 1024) - MPV_RESERVED_BYTES - (ELECTRON_MEMORY_OVERHEAD_MB * 1024 * 1024))
 const MAX_MEMORY_BYTES = parseByteSize(process.env.MAX_MEMORY_BYTES, DEFAULT_RAM_STORE_MAX_BYTES)
 const MPV_CACHE_SECS = process.env.MPV_CACHE_SECS || '10'
-const MPV_CACHE_BACKBUFFER_KIB = Number(process.env.MPV_CACHE_BACKBUFFER_KIB || 8192)
 const MPV_CACHE_PAUSE_WAIT = process.env.MPV_CACHE_PAUSE_WAIT || '20'
 const MPV_NETWORK_TIMEOUT = process.env.MPV_NETWORK_TIMEOUT || '120'
 const RAM_STORE_GET_TIMEOUT_MS = Number(process.env.RAM_STORE_GET_TIMEOUT_MS || 45_000)
@@ -1228,7 +1227,6 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
     '--keep-open=no',
     '--cache=yes',
     '--cache-on-disk=no',
-    `--cache-backbuffer=${MPV_CACHE_BACKBUFFER_KIB}`,
     '--cache-pause=yes',
     '--cache-pause-initial=yes',
     `--cache-pause-wait=${MPV_CACHE_PAUSE_WAIT}`,

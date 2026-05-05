@@ -60,6 +60,7 @@ test('desktop runtime uses bounded RAM-only stream defaults', async () => {
   assert.match(main, /MPV_DEMUXER_MAX_BACK_BYTES = process\.env\.MPV_DEMUXER_MAX_BACK_BYTES \|\| '8MiB'/)
   assert.match(main, /WEBTORRENT_MAX_CONNS = Number\(process\.env\.WEBTORRENT_MAX_CONNS \|\| 30\)/)
   assert.match(main, /--cache-on-disk=no/)
+  assert.equal(main.includes('--cache-backbuffer='), false)
   assert.match(main, /STREAM_RANGE_MAX_BYTES/)
   assert.match(main, /taskkill/)
   assert.equal(main.includes("'--msg-level=all=v',"), false)

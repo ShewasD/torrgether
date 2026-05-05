@@ -1,6 +1,6 @@
 {
   "name": "torrgether",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Legal co-watching desktop app with catalog browsing, update checks, MPV control, and RAM-only torrent streaming.",
   "author": "ShewasD <130910070+ShewasD@users.noreply.github.com>",
   "private": true,
