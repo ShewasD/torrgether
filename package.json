@@ -16,8 +16,8 @@
     "test": "node --test",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "dist:win": "electron-builder --win nsis",
-    "dist:linux": "electron-builder --linux AppImage deb"
+    "dist:win": "electron-builder --win nsis --publish never",
+    "dist:linux": "electron-builder --linux AppImage deb --publish never"
   },
   "build": {
     "appId": "com.torrgether.app",
