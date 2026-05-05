@@ -17,6 +17,7 @@ const DEFAULT_WINDOW_AHEAD_SECS = 30
 const DEFAULT_WINDOW_BEHIND_SECS = 10
 const DEFAULT_ACTIVE_READ_TTL_MS = 8000
 const DEFAULT_AVG_BITRATE_BPS = 5_000_000
+const DEFAULT_PLAYBACK_HEAD_STALE_MS = 15_000
 
 function toPositiveNumber(value, fallback) {
   const number = Number(value)
@@ -64,7 +65,9 @@ export default class LruMemoryChunkStore {
     this.maxRecentEvictions = toPositiveNumber(opts.maxRecentEvictions ?? process.env.RAM_STORE_MAX_RECENT_EVICTIONS, DEFAULT_MAX_RECENT_EVICTIONS)
     this.onWarning = typeof opts.onWarning === 'function' ? opts.onWarning : null
     this.activeReadTtlMs = toPositiveNumber(opts.activeReadTtlMs ?? process.env.RAM_STORE_ACTIVE_READ_TTL_MS, DEFAULT_ACTIVE_READ_TTL_MS)
+    this.playbackHeadStaleMs = toPositiveNumber(opts.playbackHeadStaleMs ?? process.env.RAM_STORE_PLAYBACK_HEAD_STALE_MS, DEFAULT_PLAYBACK_HEAD_STALE_MS)
     this.playbackHead = null
+    this.playbackHeadUpdatedAt = 0
     this.windowAheadPieces = toPositiveNumber(
       opts.windowAheadPieces ?? process.env.RAM_STORE_WINDOW_AHEAD_PIECES,
       piecesForWindow({
@@ -131,6 +134,7 @@ export default class LruMemoryChunkStore {
       maxPendingReads: this.maxPendingReads,
       overLimitWarnings: this.overLimitWarnings,
       playbackHead: this.playbackHead,
+      playbackHeadAgeMs: this.playbackHeadUpdatedAt ? Date.now() - this.playbackHeadUpdatedAt : null,
       windowAheadPieces: this.windowAheadPieces,
       windowBehindPieces: this.windowBehindPieces,
       activeReads: this.activeReads.size
@@ -140,6 +144,7 @@ export default class LruMemoryChunkStore {
   setPlaybackHead(pieceIndex) {
     if (!Number.isInteger(pieceIndex) || pieceIndex < 0) return
     this.playbackHead = pieceIndex
+    this.playbackHeadUpdatedAt = Date.now()
   }
 
   put(index, buffer, cb = () => {}) {
@@ -259,14 +264,18 @@ export default class LruMemoryChunkStore {
 
   _isProtected(index) {
     if (this.activeReads.has(index)) return true
-    if (this.playbackHead == null) return false
+    if (!this._hasFreshPlaybackHead()) return false
     const start = this.playbackHead - this.windowBehindPieces
     const end = this.playbackHead + this.windowAheadPieces
     return index >= start && index <= end
   }
 
+  _hasFreshPlaybackHead() {
+    return this.playbackHead != null && this.playbackHeadUpdatedAt > 0 && Date.now() - this.playbackHeadUpdatedAt <= this.playbackHeadStaleMs
+  }
+
   _fallbackEvictIndex(protectedIndex = null) {
-    if (this.playbackHead == null) return null
+    if (!this._hasFreshPlaybackHead()) return null
     let candidate = null
     let farthestBehind = 0
     for (const index of this.chunks.keys()) {
@@ -280,7 +289,7 @@ export default class LruMemoryChunkStore {
   }
 
   _emergencyEvictOldChunks() {
-    if (this.playbackHead == null) return
+    if (!this._hasFreshPlaybackHead()) return
     const cutoff = this.playbackHead - this.windowBehindPieces * 2
     for (const index of [...this.chunks.keys()]) {
       if (index >= cutoff || this.activeReads.has(index)) continue

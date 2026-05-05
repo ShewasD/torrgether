@@ -4,6 +4,7 @@ const { io } = require('socket.io-client')
 let socket = null
 const rendererSocketHandlers = new Map()
 const DEFAULT_ACK_TIMEOUT_MS = Number(process.env.SOCKET_ACK_TIMEOUT_MS || 8000)
+const SOCKET_RECONNECTION_ATTEMPTS = Number(process.env.SOCKET_RECONNECTION_ATTEMPTS || 50)
 
 function appLog(level, message, data) {
   try {
@@ -25,7 +26,7 @@ contextBridge.exposeInMainWorld('torrgether', {
     socket = io(url, {
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionAttempts: Infinity,
+      reconnectionAttempts: SOCKET_RECONNECTION_ATTEMPTS,
       reconnectionDelay: 600,
       reconnectionDelayMax: 3000,
       timeout: 15000,
@@ -123,6 +124,8 @@ contextBridge.exposeInMainWorld('torrgether', {
   openReleasePage: url => ipcRenderer.invoke('app:open-release-page', url),
   openLogsFolder: () => ipcRenderer.invoke('app:open-logs-folder'),
   searchSources: args => ipcRenderer.invoke('sources:search', args),
+  searchCatalog: args => ipcRenderer.invoke('catalog:search', args),
+  catalogDetails: resultId => ipcRenderer.invoke('catalog:details', resultId),
   importSourceResult: resultId => ipcRenderer.invoke('sources:import', resultId),
   showRutracker: () => ipcRenderer.invoke('rutracker:show'),
   hideRutracker: () => ipcRenderer.invoke('rutracker:hide'),

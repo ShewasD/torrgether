@@ -9,6 +9,7 @@ import { createTokenAuthMiddleware } from './auth.js'
 
 export const MAX_CLIENT_ID_LENGTH = 120
 const MAX_TORRENT_FILE_BASE64_BYTES = 7 * 1024 * 1024 // protects the signaling server
+const MAX_MAGNET_URI_LENGTH = 2048
 const MAX_SELECTED_FILE_INDEX = 10000
 
 function numericOption(value, fallback, { min = 0 } = {}) {
@@ -413,6 +414,9 @@ export async function startSignalingServer(options = {}) {
       const isMagnet = torrentPayload.kind === 'magnet' && typeof torrentPayload.magnetURI === 'string'
       const isTorrentFile = torrentPayload.kind === 'torrent-file' && typeof torrentPayload.base64 === 'string'
       if (!isMagnet && !isTorrentFile) return ack?.({ ok: false, error: 'Unsupported torrent payload' })
+      if (isMagnet && (torrentPayload.magnetURI.length > MAX_MAGNET_URI_LENGTH || !/^magnet:\?/.test(torrentPayload.magnetURI))) {
+        return ack?.({ ok: false, error: 'Invalid magnet URI' })
+      }
 
       if (isTorrentFile && Buffer.byteLength(torrentPayload.base64, 'base64') > MAX_TORRENT_FILE_BASE64_BYTES) {
         return ack?.({ ok: false, error: '.torrent file is too large for this MVP signaling server' })

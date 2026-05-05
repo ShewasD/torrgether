@@ -1,6 +1,6 @@
 {
   "name": "torrgether",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Legal co-watching desktop app with catalog browsing, update checks, MPV control, and RAM-only torrent streaming.",
   "author": "ShewasD <130910070+ShewasD@users.noreply.github.com>",
   "private": true,
@@ -68,6 +68,8 @@
       "perMachine": true,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Torrgether",
       "include": "build/installer.nsh"
     },
     "linux": {
@@ -108,7 +110,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "express": "^5.1.0",
+    "express": "^4.21.2",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
     "webtorrent": "2.8.5"

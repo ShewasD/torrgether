@@ -13,7 +13,7 @@ import { parseMpvStdoutStatus } from './mpvOutput.js'
 import { getMpvCandidates } from './mpvPaths.js'
 import { shouldDisableHardwareAcceleration } from './gpuPolicy.js'
 import { waitForReady } from './streamServerReady.js'
-import { fetchSourceTorrent, searchSources } from './sourceProviders.js'
+import { fetchSourceTorrent, searchCatalog, searchSources } from './sourceProviders.js'
 import { checkForUpdates, DEFAULT_UPDATE_REPO } from './updateCheck.js'
 import { createLogger, redactForLog } from '../shared/logger.js'
 import { startSignalingServer } from '../server/server.js'
@@ -67,7 +67,11 @@ let sourceResultCache = new Map()
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.avi', '.ogv'])
 const MAX_TORRENT_FILE_BYTES = Number(process.env.MAX_TORRENT_FILE_BYTES || 10 * 1024 * 1024)
+const MAX_MAGNET_URI_LENGTH = Number(process.env.MAX_MAGNET_URI_LENGTH || 2048)
 const FETCH_TORRENT_TIMEOUT_MS = Number(process.env.FETCH_TORRENT_TIMEOUT_MS || 30_000)
+const CATALOG_SEARCH_TIMEOUT_MS = Number(process.env.CATALOG_SEARCH_TIMEOUT_MS || 15_000)
+const CATALOG_MAX_RESULTS = Number(process.env.CATALOG_MAX_RESULTS || 24)
+const SOURCE_RESULT_CACHE_TTL_MS = Number(process.env.SOURCE_RESULT_CACHE_TTL_MS || 30 * 60 * 1000)
 const MAX_MEMORY_CHUNKS = Number(process.env.MAX_MEMORY_CHUNKS || 384)
 const MAX_MEMORY_MB = Number(process.env.MAX_MEMORY_MB || 512)
 const MPV_DEMUXER_MAX_BYTES = process.env.MPV_DEMUXER_MAX_BYTES || '24MiB'
@@ -92,11 +96,19 @@ const MPV_IPC_RETRY_MS = Number(process.env.MPV_IPC_RETRY_MS || 100)
 const MPV_SHUTDOWN_GRACE_MS = Number(process.env.MPV_SHUTDOWN_GRACE_MS || 1500)
 const MPV_SHUTDOWN_KILL_AFTER_MS = Number(process.env.MPV_SHUTDOWN_KILL_AFTER_MS || 2000)
 const MPV_VERBOSE_LOGS = ['1', 'true', 'yes'].includes(String(process.env.MPV_VERBOSE_LOGS || '').toLowerCase())
+const MPV_FULLSCREEN = !['0', 'false', 'no'].includes(String(process.env.MPV_FULLSCREEN ?? '1').toLowerCase())
+const MPV_PLAYBACK_HEAD_SYNC_MS = Number(process.env.MPV_PLAYBACK_HEAD_SYNC_MS || 3000)
 const PLAYER_LOG_MAX_LINES = 400
-const HEALTH_SNAPSHOT_INTERVAL_MS = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 30_000)
+const HEALTH_SNAPSHOT_INTERVAL_MS = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 60_000)
 const MEMORY_PRESSURE_INTERVAL_MS = Number(process.env.MEMORY_PRESSURE_INTERVAL_MS || 5000)
 const MEMORY_PRESSURE_HEAP_RATIO = Number(process.env.MEMORY_PRESSURE_HEAP_RATIO || 0.80)
+const MEMORY_PRESSURE_RSS_RATIO = Number(process.env.MEMORY_PRESSURE_RSS_RATIO || 0.80)
+const MEMORY_PRESSURE_RSS_LIMIT_BYTES = parseByteSize(
+  process.env.MEMORY_PRESSURE_RSS_LIMIT_BYTES,
+  MAX_MEMORY_BYTES + MPV_RESERVED_BYTES + (ELECTRON_MEMORY_OVERHEAD_MB * 1024 * 1024)
+)
 const MEMORY_PRESSURE_TARGET_RATIO = Number(process.env.MEMORY_PRESSURE_TARGET_RATIO || 0.50)
+const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 10_000)
 const UPDATE_REPO = process.env.UPDATE_REPO || DEFAULT_UPDATE_REPO
 const UPDATE_CHECK_INTERVAL_MS = Number(process.env.UPDATE_CHECK_INTERVAL_MS || 6 * 60 * 60 * 1000)
 const DISABLE_UPDATE_CHECK = ['1', 'true', 'yes'].includes(String(process.env.DISABLE_UPDATE_CHECK || '').toLowerCase())
@@ -104,6 +116,7 @@ let playerLogLines = []
 let mpvPreflight = null
 let healthSnapshotTimer = null
 let memoryPressureTimer = null
+let playbackHeadSyncTimer = null
 
 const externalPlayer = {
   process: null,
@@ -181,8 +194,8 @@ function playerLog(message, data = undefined) {
   }
 
   playerLogLines.push(line)
-  if (playerLogLines.length > PLAYER_LOG_MAX_LINES) playerLogLines = playerLogLines.slice(-PLAYER_LOG_MAX_LINES)
-  mpvLogger.info(message, data)
+  if (playerLogLines.length > PLAYER_LOG_MAX_LINES) playerLogLines.splice(0, playerLogLines.length - PLAYER_LOG_MAX_LINES)
+  mpvLogger.info(message, safeData)
 
   try {
     sendToRenderer('player:log', { line, lines: playerLogLines.slice(-120), logPath: getPlayerLogPath() })
@@ -251,6 +264,37 @@ function tailText(text, max = 2000) {
   return clean.length > max ? clean.slice(-max) : clean
 }
 
+function validateMagnetURI(value) {
+  const magnetURI = String(value || '').trim()
+  if (!magnetURI.startsWith('magnet:?')) throw new Error('Invalid magnet URI')
+  if (magnetURI.length > MAX_MAGNET_URI_LENGTH) throw new Error(`Magnet URI is too long (${magnetURI.length}/${MAX_MAGNET_URI_LENGTH})`)
+  const params = new URLSearchParams(magnetURI.slice('magnet:?'.length))
+  const xt = params.get('xt') || ''
+  if (!/^urn:btih:[a-z0-9]{32,40}$/i.test(xt)) throw new Error('Magnet URI must include a valid btih hash')
+  return magnetURI
+}
+
+function rememberSourceResults(results = []) {
+  const now = Date.now()
+  for (const item of results) {
+    if (!item?.id) continue
+    sourceResultCache.set(String(item.id), { item, cachedAt: now })
+  }
+  pruneSourceResultCache(now)
+}
+
+function pruneSourceResultCache(now = Date.now()) {
+  for (const [id, entry] of sourceResultCache) {
+    if (now - Number(entry.cachedAt || 0) > SOURCE_RESULT_CACHE_TTL_MS) sourceResultCache.delete(id)
+  }
+  while (sourceResultCache.size > 1000) sourceResultCache.delete(sourceResultCache.keys().next().value)
+}
+
+function getCachedSourceResult(resultId) {
+  pruneSourceResultCache()
+  return sourceResultCache.get(String(resultId || ''))?.item || null
+}
+
 function parseRangeHeader(value) {
   const match = String(value || '').match(/^bytes=(\d+)-(\d*)$/i)
   if (!match) return null
@@ -273,9 +317,11 @@ function guardStreamRequest(req) {
 
   if (!Number.isFinite(STREAM_RANGE_MAX_BYTES) || STREAM_RANGE_MAX_BYTES <= 0) return
   const maxEnd = parsed.start + STREAM_RANGE_MAX_BYTES - 1
-  const fileEnd = Number.isFinite(Number(selectedFile?.length)) ? Number(selectedFile.length) - 1 : maxEnd
+  const selectedLength = Number(selectedFile?.length)
+  const fileEnd = Number.isFinite(selectedLength) && selectedLength > 0 ? selectedLength - 1 : maxEnd
   const cappedEnd = Math.min(parsed.end == null ? maxEnd : parsed.end, maxEnd, fileEnd)
   if (cappedEnd >= parsed.start && cappedEnd !== parsed.end) {
+    req.headers = { ...req.headers }
     req.headers.range = `bytes=${parsed.start}-${cappedEnd}`
   }
 }
@@ -310,17 +356,57 @@ function ensureMemoryPressureTimer() {
 
     const usage = process.memoryUsage()
     const heapRatio = usage.heapTotal > 0 ? usage.heapUsed / usage.heapTotal : 0
-    if (heapRatio <= MEMORY_PRESSURE_HEAP_RATIO) return
+    const rssRatio = MEMORY_PRESSURE_RSS_LIMIT_BYTES > 0 ? usage.rss / MEMORY_PRESSURE_RSS_LIMIT_BYTES : 0
+    if (heapRatio <= MEMORY_PRESSURE_HEAP_RATIO && rssRatio <= MEMORY_PRESSURE_RSS_RATIO) return
 
     const before = store.getStats?.()
     const after = store.forceEvictTo(MEMORY_PRESSURE_TARGET_RATIO)
     appLogger.warn('Forced RAM store eviction under heap pressure', {
       heapRatio,
+      rssRatio,
+      rssBytes: usage.rss,
+      rssLimitBytes: MEMORY_PRESSURE_RSS_LIMIT_BYTES,
       before,
       after
     })
   }, MEMORY_PRESSURE_INTERVAL_MS)
   memoryPressureTimer.unref?.()
+}
+
+function updatePlaybackHeadFromMpvStatus() {
+  const store = getCurrentRamStore()
+  const pieceLength = Number(currentTorrent?.pieceLength)
+  const duration = Number(externalPlayer.status.duration)
+  const timePos = Number(externalPlayer.status.timePos)
+  const fileLength = Number(selectedFile?.length)
+  if (!store?.setPlaybackHead || !Number.isFinite(pieceLength) || pieceLength <= 0) return
+  if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(timePos) || timePos < 0) return
+  if (!Number.isFinite(fileLength) || fileLength <= 0) return
+  const relativeOffset = Math.max(0, Math.min(fileLength - 1, Math.floor((timePos / duration) * fileLength)))
+  const absoluteOffset = (Number(selectedFile?.offset) || 0) + relativeOffset
+  store.setPlaybackHead(Math.floor(absoluteOffset / pieceLength))
+}
+
+async function syncPlaybackHeadFromMpv() {
+  if (!externalPlayer.status.connected) {
+    updatePlaybackHeadFromMpvStatus()
+    return
+  }
+  const [timePos, duration] = await Promise.allSettled([
+    mpvCommand(['get_property', 'time-pos'], 1000),
+    mpvCommand(['get_property', 'duration'], 1000)
+  ])
+  if (timePos.status === 'fulfilled' && Number.isFinite(Number(timePos.value))) externalPlayer.status.timePos = Number(timePos.value)
+  if (duration.status === 'fulfilled' && Number.isFinite(Number(duration.value))) externalPlayer.status.duration = Number(duration.value)
+  updatePlaybackHeadFromMpvStatus()
+}
+
+function ensurePlaybackHeadSyncTimer() {
+  if (playbackHeadSyncTimer || !Number.isFinite(MPV_PLAYBACK_HEAD_SYNC_MS) || MPV_PLAYBACK_HEAD_SYNC_MS <= 0) return
+  playbackHeadSyncTimer = setInterval(() => {
+    syncPlaybackHeadFromMpv().catch(err => playerLog('MPV playback head sync failed', { message: err.message }))
+  }, MPV_PLAYBACK_HEAD_SYNC_MS)
+  playbackHeadSyncTimer.unref?.()
 }
 
 function createClient() {
@@ -373,7 +459,9 @@ function createClient() {
       failStartup(err)
     }
   })
-  streamServerReadyPromise.catch(() => {})
+  streamServerReadyPromise.catch(err => {
+    appLogger.error('Local WebTorrent HTTP stream server startup promise rejected', err)
+  })
 }
 
 function hasExternalServerConfig() {
@@ -448,11 +536,13 @@ async function shutdownResources() {
   healthSnapshotTimer = null
   if (memoryPressureTimer) clearInterval(memoryPressureTimer)
   memoryPressureTimer = null
+  if (playbackHeadSyncTimer) clearInterval(playbackHeadSyncTimer)
+  playbackHeadSyncTimer = null
   destroyRutrackerView()
   await stopExternalPlayer().catch(err => appLogger.warn('MPV shutdown warning', err))
   await closeWebTorrentStreamServer().catch(err => appLogger.warn('Stream server shutdown warning', err))
   await destroyWebTorrentClient().catch(err => appLogger.warn('WebTorrent shutdown warning', err))
-  await embeddedSignalingServer?.close?.().catch(err => appLogger.warn('Embedded server shutdown warning', err))
+  await (embeddedSignalingServer?.close?.() ?? Promise.resolve()).catch(err => appLogger.warn('Embedded server shutdown warning', err))
   embeddedSignalingServer = null
   await Promise.allSettled([
     appLogger.close?.(),
@@ -461,8 +551,12 @@ async function shutdownResources() {
 }
 
 function sendToRenderer(channel, payload) {
-  if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
-    win.webContents.send(channel, payload)
+  try {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send(channel, payload)
+    }
+  } catch (err) {
+    appLogger.warn('Failed to send event to renderer', { channel, message: err.message })
   }
 }
 
@@ -521,12 +615,13 @@ async function fetchTorrentToMemory(url, maxBytes = MAX_TORRENT_FILE_BYTES) {
 }
 
 function importRutrackerMagnet(magnetURI) {
+  const safeMagnetURI = validateMagnetURI(magnetURI)
   sendRutrackerImport({
     kind: 'magnet',
     payload: {
       kind: 'magnet',
       name: 'RuTracker magnet',
-      magnetURI
+      magnetURI: safeMagnetURI
     }
   })
 }
@@ -750,7 +845,7 @@ function getLocalStreamURL(file) {
 
   const address = serverInstance?.server?.address?.()
   const port = streamServerPort || (typeof address === 'object' && address ? address.port : null)
-  if (!port) throw new Error('Local WebTorrent HTTP stream server is not listening yet')
+  if (port == null) throw new Error('Local WebTorrent HTTP stream server is not listening yet')
 
   // WebTorrent v2 may expose file.streamURL as a server-relative path like
   // /webtorrent/<infoHash>/<file>. MPV treats strings that start with `/` as
@@ -761,9 +856,29 @@ function getLocalStreamURL(file) {
 }
 
 function torrentIdFromPayload(payload) {
-  if (payload.kind === 'magnet') return payload.magnetURI
+  if (payload.kind === 'magnet') return validateMagnetURI(payload.magnetURI)
   if (payload.kind === 'torrent-file') return Buffer.from(payload.base64, 'base64')
   throw new Error('Unsupported torrent payload')
+}
+
+function episodeSortKey(file) {
+  const value = `${file.path || ''}/${file.name || ''}`.toLowerCase()
+  const seasonEpisode = value.match(/(?:s|season[\s._-]*)(\d{1,3})[\s._-]*(?:e|episode[\s._-]*)(\d{1,4})/i) ||
+    value.match(/\b(\d{1,3})x(\d{1,4})\b/i)
+  if (seasonEpisode) return [Number(seasonEpisode[1]), Number(seasonEpisode[2]), value]
+  const episode = value.match(/(?:episode|ep|e)[\s._-]*(\d{1,4})/i) || value.match(/\b(\d{1,4})\b/)
+  if (episode) return [0, Number(episode[1]), value]
+  return [Number.MAX_SAFE_INTEGER, Number(file.index) || 0, value]
+}
+
+function compareVideoFiles(a, b) {
+  const left = episodeSortKey(a)
+  const right = episodeSortKey(b)
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    if (left[index] < right[index]) return -1
+    if (left[index] > right[index]) return 1
+  }
+  return b.size - a.size
 }
 
 function normalizeVideoFiles(torrent) {
@@ -777,7 +892,7 @@ function normalizeVideoFiles(torrent) {
       isVideo: VIDEO_EXTENSIONS.has(path.extname(file.name).toLowerCase()) || file.type?.startsWith('video/')
     }))
     .filter(file => file.isVideo)
-    .sort((a, b) => b.size - a.size)
+    .sort(compareVideoFiles)
 }
 
 function removeTorrentAsync(torrent) {
@@ -894,7 +1009,11 @@ async function loadTorrent(payload, preferredFileIndex = null) {
       selectedFile = torrent.files[chosen.index]
 
       torrent.files.forEach(file => file.deselect())
-      selectedFile.select?.()
+      if (typeof selectedFile.select !== 'function') {
+        fail(new Error('WebTorrent file.select() is not available'))
+        return
+      }
+      selectedFile.select()
       playerLog('Selected file enabled with bounded RAM-only streaming', { file: selectedFile.name })
 
       const result = {
@@ -982,6 +1101,7 @@ function handleMpvLine(line) {
     if (msg.name === 'pause') externalPlayer.status.pause = Boolean(msg.data)
     if (msg.name === 'duration') externalPlayer.status.duration = Number.isFinite(Number(msg.data)) ? Number(msg.data) : null
     if (msg.name === 'filename') externalPlayer.status.filename = msg.data || externalPlayer.status.filename
+    if (msg.name === 'time-pos' || msg.name === 'playback-time' || msg.name === 'duration') updatePlaybackHeadFromMpvStatus()
   }
 
   if (msg.event === 'end-file') {
@@ -1064,6 +1184,7 @@ function connectToMpvIpc(ipcPath, attempts = MPV_IPC_ATTEMPTS) {
         socket.off('error', onPreConnectError)
         playerLog('Connected to MPV IPC', { ipcPath, try: tries })
         externalPlayer.socket = socket
+        externalPlayer.requestId = 1
         externalPlayer.status.connected = true
         externalPlayer.status.path = ipcPath
         socket.setEncoding('utf8')
@@ -1104,6 +1225,8 @@ function connectToMpvIpc(ipcPath, attempts = MPV_IPC_ATTEMPTS) {
 async function stopExternalPlayer(lastError = null) {
   playerLog('Stopping MPV if running', { pid: externalPlayer.process?.pid || null, connected: externalPlayer.status.connected })
   const processRef = externalPlayer.process
+  if (playbackHeadSyncTimer) clearInterval(playbackHeadSyncTimer)
+  playbackHeadSyncTimer = null
 
   if (processRef && externalPlayer.socket && externalPlayer.status.connected) {
     await Promise.race([
@@ -1182,6 +1305,32 @@ function waitForProcessExit(child, timeoutMs) {
   })
 }
 
+function buildMpvEnv(env = process.env) {
+  const keep = [
+    'PATH',
+    'Path',
+    'SystemRoot',
+    'WINDIR',
+    'TEMP',
+    'TMP',
+    'HOME',
+    'USERPROFILE',
+    'APPDATA',
+    'LOCALAPPDATA',
+    'DISPLAY',
+    'WAYLAND_DISPLAY',
+    'XDG_RUNTIME_DIR',
+    'XDG_SESSION_TYPE',
+    'LANG',
+    'LC_ALL'
+  ]
+  const result = {}
+  for (const key of keep) {
+    if (env[key] != null) result[key] = env[key]
+  }
+  return result
+}
+
 async function forceKillProcess(child) {
   if (!child?.pid) return
   try {
@@ -1224,6 +1373,7 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
   const args = [
     '--no-config',
     '--force-window=yes',
+    MPV_FULLSCREEN ? '--fs=yes' : '--fs=no',
     '--keep-open=no',
     '--cache=yes',
     '--cache-on-disk=no',
@@ -1267,7 +1417,7 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
     externalPlayer.process = spawn(mpvBinary, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: false,
-      env: process.env
+      env: buildMpvEnv()
     })
   } catch (err) {
     resetExternalStatus(err.message)
@@ -1333,6 +1483,8 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
       mpvCommand(['observe_property', 3, 'duration']),
       mpvCommand(['observe_property', 4, 'filename'])
     ])
+    ensurePlaybackHeadSyncTimer()
+    syncPlaybackHeadFromMpv().catch(err => playerLog('Initial playback head sync failed', { message: err.message }))
 
     if (startTime > 0) {
       await mpvCommand(['seek', Math.max(0, Number(startTime) || 0), 'absolute+exact']).catch(err => playerLog('Initial seek failed', { message: err.message }))
@@ -1436,7 +1588,8 @@ ipcMain.handle('torrent:select-file', async (_event, selectedFileIndex) => {
     if (!file) throw new Error('Invalid file index')
     currentTorrent.files.forEach(f => f.deselect())
     selectedFile = file
-    selectedFile.select?.()
+    if (typeof selectedFile.select !== 'function') throw new Error('WebTorrent file.select() is not available')
+    selectedFile.select()
     playerLog('Selected file changed; bounded RAM-only stream will fetch pieces on demand', { file: selectedFile.name })
     return {
       ok: true,
@@ -1546,6 +1699,7 @@ ipcMain.handle('player:stop-external', async () => {
 ipcMain.handle('app:mpv-preflight', async () => ({ ok: true, mpv: await refreshMpvPreflight() }))
 
 ipcMain.handle('app:config', async () => ({
+  version: app.getVersion(),
   serverUrl: embeddedServerInfo?.serverUrl || process.env.SERVER_URL || 'http://localhost:3000',
   serverToken: embeddedServerInfo?.serverToken || process.env.SERVER_TOKEN || '',
   embeddedServer: Boolean(embeddedServerInfo?.embedded),
@@ -1588,15 +1742,31 @@ ipcMain.handle('app:open-release-page', async (_event, url) => {
 })
 
 ipcMain.handle('sources:search', async (_event, { query, filters } = {}) => {
-  const result = await searchSources(query, filters, globalThis.fetch)
-  for (const item of result.results || []) sourceResultCache.set(item.id, item)
-  while (sourceResultCache.size > 1000) sourceResultCache.delete(sourceResultCache.keys().next().value)
+  const result = await searchSources(query, filters, globalThis.fetch, {
+    timeoutMs: CATALOG_SEARCH_TIMEOUT_MS,
+    limit: CATALOG_MAX_RESULTS
+  })
+  rememberSourceResults(result.results)
   return result
+})
+
+ipcMain.handle('catalog:search', async (_event, { query, mediaType, language } = {}) => {
+  const result = await searchCatalog(query, { mediaType, language }, globalThis.fetch, {
+    timeoutMs: CATALOG_SEARCH_TIMEOUT_MS,
+    limit: CATALOG_MAX_RESULTS
+  })
+  rememberSourceResults(result.results)
+  return result
+})
+
+ipcMain.handle('catalog:details', async (_event, resultId) => {
+  const item = getCachedSourceResult(resultId)
+  return item ? { ok: true, item } : { ok: false, error: 'Catalog item is not available anymore. Search again.' }
 })
 
 ipcMain.handle('sources:import', async (_event, resultId) => {
   try {
-    const result = sourceResultCache.get(String(resultId || ''))
+    const result = getCachedSourceResult(resultId)
     if (!result) throw new Error('Source result is not available anymore. Search again.')
     const payload = await fetchSourceTorrent(result, globalThis.fetch, { maxBytes: MAX_TORRENT_FILE_BYTES })
     return { ok: true, payload }
@@ -1726,7 +1896,12 @@ app.on('before-quit', event => {
   if (shutdownStarted) return
   shutdownStarted = true
   event.preventDefault()
-  shutdownResources()
+  Promise.race([
+    shutdownResources(),
+    delay(SHUTDOWN_TIMEOUT_MS).then(() => {
+      appLogger.warn('Desktop app shutdown timed out; forcing exit', { timeoutMs: SHUTDOWN_TIMEOUT_MS })
+    })
+  ])
     .catch(err => {
       try { appLogger.error('Desktop app shutdown failed', { error: err, health: getRuntimeHealthSnapshot() }) } catch {}
     })

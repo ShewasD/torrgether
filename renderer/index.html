@@ -15,24 +15,8 @@
       </div>
 
       <nav class="nav-list" aria-label="Primary">
-        <button class="nav-item active" type="button" data-i18n="nav.home">Home</button>
-        <button class="nav-item" type="button" data-i18n="nav.movies">Movies</button>
-        <button class="nav-item" type="button" data-i18n="nav.series">Series</button>
-        <button class="nav-item" type="button" data-i18n="nav.anime">Anime</button>
-        <button class="nav-item" type="button" data-i18n="nav.favorites">Favorites</button>
-        <button class="nav-item" type="button" data-i18n="nav.history">History</button>
-        <button class="nav-item" type="button" data-i18n="nav.downloads">Downloads</button>
-        <button class="nav-item" type="button" data-i18n="nav.settings">Settings</button>
+        <button class="nav-item active" type="button" data-i18n="nav.watch">Просмотр</button>
       </nav>
-
-      <section class="rail-section">
-        <p class="rail-title" data-i18n="nav.categories">Categories</p>
-        <span>Action</span>
-        <span>Drama</span>
-        <span>Comedy</span>
-        <span>Thriller</span>
-        <span>Open license</span>
-      </section>
 
       <section class="profile-strip">
         <span class="avatar">TG</span>
@@ -44,10 +28,17 @@
       <header class="topbar">
         <div class="search-box">
           <span aria-hidden="true">⌕</span>
-          <input id="sourceSearchInput" data-i18n-placeholder="search.placeholder" placeholder="Search legal movies, public-domain video..." />
+          <input id="sourceSearchInput" data-i18n-placeholder="search.placeholder" placeholder="Search movies, series, anime..." />
           <button id="sourceSearchBtn" class="icon-button" type="button" data-i18n-title="buttons.search" title="Search">↵</button>
         </div>
         <div class="top-actions">
+          <div class="media-filter" role="group" aria-label="Catalog type">
+            <button class="media-filter-btn active" type="button" data-media-filter="all" data-i18n="catalog.all">Все</button>
+            <button class="media-filter-btn" type="button" data-media-filter="movie" data-i18n="nav.movies">Фильмы</button>
+            <button class="media-filter-btn" type="button" data-media-filter="series" data-i18n="nav.series">Сериалы</button>
+            <button class="media-filter-btn" type="button" data-media-filter="anime" data-i18n="nav.anime">Аниме</button>
+          </div>
+          <button id="themeToggleBtn" class="icon-button" type="button" data-i18n-title="theme.toggle" title="Toggle theme">☾</button>
           <label class="visually-compact" for="languageSelect" data-i18n="labels.language">UI language</label>
           <select id="languageSelect" class="compact-select">
             <option value="en">English</option>
@@ -100,36 +91,56 @@
         <button id="updateDismissBtn" class="icon-button" type="button" data-i18n-title="updates.dismiss" title="Dismiss">×</button>
       </section>
 
-      <section class="content-grid">
-        <section class="catalog-pane">
-          <section class="hero-panel">
-            <div>
-              <p class="kicker" data-i18n="app.eyebrow">Torrgether 0.3.0</p>
+      <section class="watch-layout">
+        <section class="watch-main">
+          <section class="player-preview">
+            <img id="detailBackdrop" alt="" src="https://archive.org/services/img/Sintel" />
+            <div class="player-shade"></div>
+            <div class="player-center-controls">
+              <button id="mpvBackBtn" class="round-control" disabled type="button" data-i18n-title="controls.back" title="-10 sec">↶</button>
+              <button id="mpvToggleBtn" class="play-control" disabled type="button" data-i18n-title="buttons.playPause" title="Play / Pause">▶</button>
+              <button id="mpvForwardBtn" class="round-control" disabled type="button" data-i18n-title="controls.forward" title="+10 sec">↷</button>
+            </div>
+            <div class="player-bottom">
+              <span id="timeStatus">0.0</span>
+              <div class="timeline"><span id="progressBar"></span></div>
+              <span id="progressPercent">0%</span>
+              <button id="openMpvBtn" class="icon-button" disabled type="button" data-i18n-title="buttons.restartMpv" title="Open MPV">⛶</button>
+            </div>
+          </section>
+
+          <section class="title-block">
+            <div class="poster-chip">
+              <img id="detailPoster" alt="" src="https://archive.org/services/img/Sintel" />
+            </div>
+            <div class="title-copy">
+              <p class="kicker" id="appEyebrow">Torrgether</p>
               <h1 id="detailTitle">Sintel</h1>
-              <p id="detailMeta" class="meta-line">2010 · 1080p · open movie</p>
+              <p id="detailMeta" class="meta-line">2010 · movie · open catalog</p>
               <p id="detailDescription" class="hero-copy">Open-license catalog results can be imported directly into the room and streamed through MPV from RAM.</p>
+              <div id="catalogBadges" class="badge-row"></div>
               <div class="hero-actions">
-                <button id="detailImportBtn" class="primary" type="button" data-i18n="buttons.watch">Watch</button>
-                <button id="detailFavoriteBtn" type="button" data-i18n="buttons.favorite">Favorite</button>
+                <button id="detailImportBtn" class="primary" type="button" data-i18n="buttons.continue">Продолжить</button>
+                <button id="detailFavoriteBtn" type="button" data-i18n="buttons.favorite">В избранное</button>
+                <button id="mpvStopBtn" type="button" disabled data-i18n="buttons.stopMpv">Stop MPV</button>
               </div>
             </div>
           </section>
 
           <section class="section-line">
-            <h2 data-i18n="catalog.popular">Popular</h2>
+            <h2 data-i18n="catalog.results">Каталог</h2>
             <span id="sourceCount" class="linkish">0</span>
           </section>
           <p id="languageNotice" class="notice hidden"></p>
           <div id="sourceResults" class="poster-row"></div>
 
           <section class="section-line">
-            <h2 data-i18n="catalog.continue">Continue watching</h2>
+            <h2 data-i18n="catalog.similar">Похожие</h2>
           </section>
           <div class="watch-row">
             <article class="watch-card">
               <strong id="videoTitle" data-i18n="player.noVideo">No video selected</strong>
               <span id="mkvHint" data-i18n="player.chooseHint">Choose a catalog result, .torrent, or magnet.</span>
-              <div class="mini-progress"><span id="progressBar"></span></div>
             </article>
             <article class="watch-card">
               <strong data-i18n="stream.ramCache">RAM cache</strong>
@@ -137,68 +148,75 @@
               <div class="mini-progress ram"><span id="ramBar"></span></div>
             </article>
           </div>
-
-          <section class="source-panel-shell">
-            <div class="section-line">
-              <h2 data-i18n="sources.title">Sources</h2>
-              <div class="tabbar">
-                <button id="catalogSourceTab" class="tab active" type="button" data-i18n="sources.catalog">Catalog</button>
-                <button id="manualSourceTab" class="tab" type="button" data-i18n="sources.manual">Manual</button>
-                <button id="rutrackerSourceTab" class="tab" type="button" data-i18n="sources.rutracker">RuTracker</button>
-              </div>
-            </div>
-
-            <div id="catalogSourcePanel" class="source-panel">
-              <div id="torrentList" class="torrent-list"></div>
-            </div>
-
-            <div id="manualSourcePanel" class="source-panel hidden">
-              <section id="hostControls" class="manual-controls hidden">
-                <button id="chooseTorrentBtn" data-i18n="buttons.chooseTorrent">Choose .torrent</button>
-                <div class="inline-load">
-                  <input id="magnetInput" data-i18n-placeholder="sources.magnetPlaceholder" placeholder="or paste magnet URI" />
-                  <button id="setMagnetBtn" data-i18n="buttons.load">Load</button>
-                </div>
-                <label for="fileSelect" data-i18n="sources.videoInside">Video inside torrent</label>
-                <select id="fileSelect" disabled></select>
-              </section>
-            </div>
-
-            <div id="rutrackerPanel" class="source-panel hidden">
-              <div class="rutracker-toolbar">
-                <button id="rutrackerOpenBtn" class="primary" type="button" data-i18n="buttons.rutrackerOpen">Open RuTracker</button>
-                <button id="rutrackerBackBtn" type="button" data-i18n="buttons.rutrackerBack">Back</button>
-                <button id="rutrackerForwardBtn" type="button" data-i18n="buttons.rutrackerForward">Forward</button>
-                <button id="rutrackerReloadBtn" type="button" data-i18n="buttons.rutrackerReload">Reload</button>
-                <button id="rutrackerCloseBtn" type="button" data-i18n="buttons.rutrackerClose">Hide</button>
-              </div>
-              <p id="rutrackerStatus" class="muted small" data-i18n="rutracker.subtitle">Open the isolated RuTracker panel and import a magnet or .torrent into RAM.</p>
-              <div id="rutrackerViewport" class="rutracker-viewport">
-                <div class="rutracker-placeholder" data-i18n="rutracker.placeholder">RuTracker opens here.</div>
-              </div>
-            </div>
-          </section>
         </section>
 
-        <aside class="detail-pane">
-          <div class="poster-frame">
-            <img id="detailPoster" alt="" src="https://archive.org/services/img/Sintel" />
-          </div>
-          <div class="detail-actions">
-            <button id="openMpvBtn" class="primary" disabled data-i18n="buttons.restartMpv">Restart MPV</button>
-            <button id="mpvStopBtn" disabled data-i18n="buttons.stopMpv">Stop MPV</button>
-          </div>
-
+        <aside class="side-panel">
           <div class="tabbar wide">
-            <button class="tab active" type="button" data-i18n="catalog.torrents">Torrents</button>
-            <button class="tab" type="button" data-i18n="catalog.info">Information</button>
+            <button id="rightTorrentsTab" class="tab active" type="button" data-panel-tab="torrents" data-i18n="catalog.torrents">Торренты</button>
+            <button id="rightInfoTab" class="tab" type="button" data-panel-tab="info" data-i18n="catalog.info">Информация</button>
           </div>
 
-          <section class="stats-grid">
-            <div><span data-i18n="stream.peers">Peers</span><b id="peerStatus">-</b></div>
-            <div><span data-i18n="stream.speed">Speed</span><b id="speedStatus">-</b></div>
-            <div><span data-i18n="stream.time">Time</span><b><span id="timeStatus">0.0</span>s</b></div>
-            <div><span data-i18n="status.seq">seq:</span><b id="seqStatus">0</b></div>
+          <section id="rightTorrentsPanel" class="panel-section">
+            <div id="torrentList" class="torrent-list"></div>
+            <section id="hostControls" class="manual-controls hidden">
+              <button id="chooseTorrentBtn" data-i18n="buttons.chooseTorrent">Choose .torrent</button>
+              <div class="inline-load">
+                <input id="magnetInput" data-i18n-placeholder="sources.magnetPlaceholder" placeholder="or paste magnet URI" />
+                <button id="setMagnetBtn" data-i18n="buttons.load">Load</button>
+              </div>
+            </section>
+            <div class="rutracker-toolbar">
+              <button id="rutrackerOpenBtn" class="primary" type="button" data-i18n="buttons.rutrackerOpen">Open RuTracker</button>
+              <button id="rutrackerBackBtn" type="button" data-i18n="buttons.rutrackerBack">Back</button>
+              <button id="rutrackerForwardBtn" type="button" data-i18n="buttons.rutrackerForward">Forward</button>
+              <button id="rutrackerReloadBtn" type="button" data-i18n="buttons.rutrackerReload">Reload</button>
+              <button id="rutrackerCloseBtn" type="button" data-i18n="buttons.rutrackerClose">Hide</button>
+            </div>
+            <p id="rutrackerStatus" class="muted small" data-i18n="rutracker.subtitle">Open the isolated RuTracker panel and import a magnet or .torrent into RAM.</p>
+            <div id="rutrackerViewport" class="rutracker-viewport">
+              <div class="rutracker-placeholder" data-i18n="rutracker.placeholder">RuTracker opens here.</div>
+            </div>
+          </section>
+
+          <section id="rightInfoPanel" class="panel-section hidden">
+            <section class="stats-grid">
+              <div><span data-i18n="stream.peers">Peers</span><b id="peerStatus">-</b></div>
+              <div><span data-i18n="stream.speed">Speed</span><b id="speedStatus">-</b></div>
+              <div><span data-i18n="status.seq">seq:</span><b id="seqStatus">0</b></div>
+              <div><span data-i18n="stream.cachePressure">Pressure</span><b id="cachePressureStatus">-</b></div>
+            </section>
+          </section>
+
+          <section class="panel-section">
+            <h2 data-i18n="stream.file">Files</h2>
+            <label for="fileSelect" data-i18n="sources.videoInside">Video inside torrent</label>
+            <select id="fileSelect" disabled></select>
+          </section>
+
+          <section class="panel-section">
+            <h2 data-i18n="player.title">Плеер</h2>
+            <span id="mpvStatus" class="pill" data-i18n="mpv.notStarted">not started</span>
+            <div class="player-settings">
+              <label for="qualitySelect" data-i18n="catalog.quality">Quality</label>
+              <select id="qualitySelect">
+                <option>Авто</option>
+                <option>1080p</option>
+                <option>720p</option>
+              </select>
+              <label for="subtitleSelect">Subtitles</label>
+              <select id="subtitleSelect">
+                <option>Off</option>
+                <option>Русские</option>
+                <option>English</option>
+              </select>
+              <div class="speed-pills" aria-label="Playback speed">
+                <button type="button">0.75x</button>
+                <button class="active" type="button">1x</button>
+                <button type="button">1.25x</button>
+                <button type="button">1.5x</button>
+              </div>
+              <button id="showMpvLogsBtn" type="button" data-i18n="buttons.showLog">Show log</button>
+            </div>
           </section>
 
           <section class="room-box">
@@ -220,23 +238,12 @@
             <button id="joinBtn" class="primary full" data-i18n="buttons.join">Join</button>
           </section>
 
-          <section class="controls-box">
-            <h2 data-i18n="controls.title">MPV Controls</h2>
-            <span id="mpvStatus" class="pill" data-i18n="mpv.notStarted">not started</span>
-            <div class="mpv-controls">
-              <button id="mpvBackBtn" disabled data-i18n="controls.back">-10 sec</button>
-              <button id="mpvToggleBtn" class="primary" disabled data-i18n="buttons.playPause">Play / Pause</button>
-              <button id="mpvForwardBtn" disabled data-i18n="controls.forward">+10 sec</button>
-              <button id="showMpvLogsBtn" data-i18n="buttons.showLog">Show log</button>
-            </div>
-          </section>
-
-          <section>
+          <section class="panel-section">
             <h2 data-i18n="participants.title">Participants</h2>
             <ul id="members" class="members"></ul>
           </section>
 
-          <section>
+          <section class="panel-section">
             <h2 data-i18n="diagnostics.title">Diagnostics</h2>
             <details class="debug-box">
               <summary data-i18n="diagnostics.summary">MPV diagnostics</summary>
@@ -246,7 +253,7 @@
             </details>
           </section>
 
-          <section>
+          <section class="panel-section">
             <h2 data-i18n="events.title">Events</h2>
             <pre id="log" class="app-log"></pre>
           </section>
@@ -254,9 +261,7 @@
       </section>
     </section>
 
-    <span id="progressPercent" class="hidden">0%</span>
     <span id="ramShortStatus" class="hidden">-</span>
-    <span id="cachePressureStatus" class="hidden">-</span>
     <span id="evictionStatus" class="hidden">0</span>
     <span id="refetchStatus" class="hidden">0</span>
     <span id="pendingStatus" class="hidden">0</span>

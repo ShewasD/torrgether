@@ -16,11 +16,16 @@ const els = {
   sourceResults: $('sourceResults'),
   sourceCount: $('sourceCount'),
   languageNotice: $('languageNotice'),
+  themeToggleBtn: $('themeToggleBtn'),
+  detailBackdrop: $('detailBackdrop'),
   detailTitle: $('detailTitle'),
   detailMeta: $('detailMeta'),
   detailDescription: $('detailDescription'),
   detailPoster: $('detailPoster'),
+  catalogBadges: $('catalogBadges'),
+  appEyebrow: $('appEyebrow'),
   detailImportBtn: $('detailImportBtn'),
+  detailFavoriteBtn: $('detailFavoriteBtn'),
   torrentList: $('torrentList'),
   serverUrl: $('serverUrl'),
   serverToken: $('serverToken'),
@@ -109,6 +114,9 @@ const state = {
   rutrackerVisible: false,
   rutrackerBoundsRequest: null,
   contentLanguage: localStorage.getItem('torrgether.contentLanguage') || 'any',
+  mediaType: localStorage.getItem('torrgether.mediaType') || 'all',
+  theme: localStorage.getItem('torrgether.theme') || 'dark',
+  appVersion: null,
   sourceResults: [],
   selectedSourceResult: null,
   updateReleaseUrl: null
@@ -133,6 +141,15 @@ window.addEventListener('beforeunload', () => {
   intervalHandles.clear()
 })
 
+function applyTheme(theme = state.theme) {
+  state.theme = theme === 'light' ? 'light' : 'dark'
+  localStorage.setItem('torrgether.theme', state.theme)
+  document.documentElement.dataset.theme = state.theme
+  if (els.themeToggleBtn) els.themeToggleBtn.textContent = state.theme === 'dark' ? '☾' : '☀'
+}
+
+applyTheme(state.theme)
+
 function t(key, params = {}) {
   return translate(state.locale, key, params)
 }
@@ -150,6 +167,11 @@ function setLocale(locale) {
   updateSourceTabs()
   renderSourceResults(state.sourceResults)
   renderSelectedSource(state.selectedSourceResult)
+  updateAppVersionLabel()
+}
+
+function updateAppVersionLabel() {
+  if (els.appEyebrow) els.appEyebrow.textContent = state.appVersion ? `Torrgether ${state.appVersion}` : t('app.eyebrow')
 }
 
 function setContentLanguage(language) {
@@ -159,16 +181,26 @@ function setContentLanguage(language) {
   scheduleSearchCatalog()
 }
 
+function setMediaType(mediaType) {
+  state.mediaType = ['all', 'movie', 'series', 'anime'].includes(mediaType) ? mediaType : 'all'
+  localStorage.setItem('torrgether.mediaType', state.mediaType)
+  document.querySelectorAll('[data-media-filter]').forEach(button => {
+    button.classList.toggle('active', button.dataset.mediaFilter === state.mediaType)
+  })
+  scheduleSearchCatalog(0)
+}
+
 function flushRendererLog() {
   rendererLogFlush = null
   if (!els.log) return
-  els.log.textContent = rendererLogLines.join('\n').slice(0, 6000)
+  els.log.textContent = rendererLogLines.slice().reverse().join('\n').slice(-6000)
+  els.log.scrollTop = els.log.scrollHeight
 }
 
 function log(message) {
   const line = `[${new Date().toLocaleTimeString()}] ${message}`
-  rendererLogLines.unshift(line)
-  if (rendererLogLines.length > 120) rendererLogLines.length = 120
+  rendererLogLines.push(line)
+  if (rendererLogLines.length > 120) rendererLogLines.splice(0, rendererLogLines.length - 120)
   if (!rendererLogFlush) rendererLogFlush = requestAnimationFrame(flushRendererLog)
   window.torrgether?.writeAppLog?.({ level: 'info', source: 'renderer', message })
 }
@@ -243,6 +275,8 @@ function logLocationLabel(value) {
 async function applyClientConfig() {
   try {
     const config = await window.torrgether.clientConfig()
+    state.appVersion = config.version || state.appVersion
+    updateAppVersionLabel()
     if (config.serverUrl && els.serverUrl.value === 'http://localhost:3000') els.serverUrl.value = config.serverUrl
     if (config.serverToken && els.serverToken) els.serverToken.value = config.serverToken
     if (config.mpvLogPath) els.mpvLogPath.textContent = logLocationLabel(config.mpvLogPath)
@@ -282,7 +316,7 @@ function updateActionState() {
   if (els.mpvBackBtn) els.mpvBackBtn.disabled = !isMpvConnected()
   if (els.mpvForwardBtn) els.mpvForwardBtn.disabled = !isMpvConnected()
   if (els.mpvStopBtn) els.mpvStopBtn.disabled = !state.mpvActive && !state.externalStatus?.running
-  if (els.detailImportBtn) els.detailImportBtn.disabled = !state.isHost || !state.selectedSourceResult || !hasMpv
+  if (els.detailImportBtn) els.detailImportBtn.disabled = !state.isHost || !state.selectedSourceResult || !isPlayableResult(state.selectedSourceResult) || !hasMpv
   for (const button of busyButtons) button.disabled = true
 }
 
@@ -382,13 +416,23 @@ function formatBytes(bytes) {
   return `${(size / 1024).toFixed(0)} KB`
 }
 
+function isPlayableResult(result) {
+  return Boolean(result?.playableSource || result?.torrentUrl || result?.magnetURI || result?.torrentBytes)
+}
+
 function resultMeta(result) {
   return [
     result.year || '',
+    result.mediaType || '',
     result.quality || '',
-    result.language || '',
-    formatBytes(result.sizeBytes)
+    result.language || ''
   ].filter(Boolean).join(' · ')
+}
+
+function ratingLabel(result) {
+  const rating = Number(result?.rating)
+  if (!Number.isFinite(rating)) return '-'
+  return `${rating.toFixed(1)}${result?.ratingSource ? ` ${result.ratingSource}` : ''}`
 }
 
 function safePosterUrl(value) {
@@ -399,6 +443,17 @@ function safePosterUrl(value) {
   return 'https://archive.org/services/img/Sintel'
 }
 
+function isValidMagnetURI(value) {
+  const magnetURI = String(value || '').trim()
+  if (!magnetURI.startsWith('magnet:?') || magnetURI.length > 2048) return false
+  try {
+    const params = new URLSearchParams(magnetURI.slice('magnet:?'.length))
+    return /^urn:btih:[a-z0-9]{32,40}$/i.test(params.get('xt') || '')
+  } catch {
+    return false
+  }
+}
+
 function renderSelectedSource(result) {
   state.selectedSourceResult = result || null
   const title = result?.title || 'Torrgether'
@@ -406,7 +461,27 @@ function renderSelectedSource(result) {
   els.detailMeta.textContent = result ? resultMeta(result) : 'RAM-only streaming'
   els.detailDescription.textContent = result?.description || t('app.subtitle')
   if (els.detailPoster) els.detailPoster.src = safePosterUrl(result?.posterUrl)
+  if (els.detailBackdrop) els.detailBackdrop.src = safePosterUrl(result?.backdropUrl || result?.posterUrl)
+  if (els.catalogBadges) {
+    els.catalogBadges.innerHTML = ''
+    for (const label of [
+      result?.mediaType,
+      result?.rating != null ? `${t('catalog.rating')}: ${ratingLabel(result)}` : null,
+      result?.providerId,
+      ...(result?.genres || []).slice(0, 3)
+    ].filter(Boolean)) {
+      const badge = document.createElement('span')
+      badge.className = 'badge'
+      badge.textContent = label
+      els.catalogBadges.appendChild(badge)
+    }
+  }
+  if (els.detailFavoriteBtn) {
+    const favorite = result?.id ? localStorage.getItem(`torrgether.favorite.${result.id}`) === '1' : false
+    els.detailFavoriteBtn.classList.toggle('active', favorite)
+  }
   renderTorrentList(result)
+  updateActionState()
 }
 
 function renderTorrentList(result) {
@@ -424,15 +499,20 @@ function renderTorrentList(result) {
   row.className = 'torrent-row'
   const info = document.createElement('div')
   const title = document.createElement('strong')
-  title.textContent = `${result.providerId} · ${result.quality || 'torrent'}`
+  title.textContent = isPlayableResult(result)
+    ? `${result.providerId} · ${result.quality || 'torrent'}`
+    : `${result.providerId} · metadata`
   const meta = document.createElement('span')
-  meta.textContent = `${t('catalog.size')}: ${formatBytes(result.sizeBytes)} · ${t('catalog.seeders')}: ${result.seeders ?? 0} · ${t('sources.duplicates', { count: result.variants?.length || 1 })}`
+  meta.textContent = isPlayableResult(result)
+    ? `${t('catalog.size')}: ${formatBytes(result.sizeBytes)} · ${t('catalog.seeders')}: ${result.seeders ?? 0} · ${t('sources.duplicates', { count: result.variants?.length || 1 })}`
+    : t('sources.notPlayable')
   info.append(title, meta)
 
   const button = document.createElement('button')
   button.className = 'primary'
   button.type = 'button'
   button.textContent = t('buttons.import')
+  button.disabled = !isPlayableResult(result)
   button.addEventListener('click', () => importSelectedSource(result))
   row.append(info, button)
   els.torrentList.appendChild(row)
@@ -465,7 +545,7 @@ function renderSourceResults(results = []) {
     img.addEventListener('error', () => { img.src = safePosterUrl(null) }, { once: true })
     const score = document.createElement('span')
     score.className = 'poster-score'
-    score.textContent = `↑ ${result.seeders ?? 0}`
+    score.textContent = result.rating != null ? `★ ${ratingLabel(result)}` : (isPlayableResult(result) ? `↑ ${result.seeders ?? 0}` : '-')
     thumb.append(img, score)
     const title = document.createElement('strong')
     title.className = 'poster-title'
@@ -483,21 +563,25 @@ function renderSourceResults(results = []) {
 }
 
 async function searchCatalog() {
-  if (!window.torrgether?.searchSources) return
+  if (!window.torrgether?.searchCatalog && !window.torrgether?.searchSources) return
   const generation = ++sourceSearchGeneration
   const query = els.sourceSearchInput?.value || ''
-  const response = await window.torrgether.searchSources({
+  const search = window.torrgether.searchCatalog || window.torrgether.searchSources
+  const response = await search({
     query,
-    filters: { language: state.contentLanguage }
+    mediaType: state.mediaType,
+    language: state.contentLanguage,
+    filters: { language: state.contentLanguage, mediaType: state.mediaType }
   })
   if (generation !== sourceSearchGeneration) return
   if (!response.ok) throw new Error(response.error || 'source search failed')
   renderSourceResults(response.results || [])
   if (els.languageNotice) {
-    els.languageNotice.classList.toggle('hidden', !response.languageFallback)
+    const warningText = (response.providerWarnings || []).map(item => `${item.providerId}: ${item.message}`).join(' · ')
+    els.languageNotice.classList.toggle('hidden', !response.languageFallback && !warningText)
     els.languageNotice.textContent = response.languageFallback
       ? t('sources.languageFallback', { language: state.contentLanguage })
-      : ''
+      : warningText
   }
 }
 
@@ -512,6 +596,7 @@ function scheduleSearchCatalog(delay = 250) {
 async function importSelectedSource(result = state.selectedSourceResult) {
   if (!result) return
   if (!state.isHost) return logT('log.hostOnly')
+  if (!isPlayableResult(result)) return logT('sources.importFailed', { error: t('sources.notPlayable') })
   const imported = await window.torrgether.importSourceResult(result.id)
   if (!imported.ok) return logT('sources.importFailed', { error: imported.error })
   await hostSetTorrentPayload(imported.payload)
@@ -884,13 +969,13 @@ function updateSourceTabs() {
   const showManual = state.sourceTab === 'manual'
   const showCatalog = state.sourceTab === 'catalog'
   els.catalogSourceTab?.classList.toggle('active', showCatalog)
-  els.manualSourceTab.classList.toggle('active', showManual)
-  els.rutrackerSourceTab.classList.toggle('active', showRutracker)
+  els.manualSourceTab?.classList.toggle('active', showManual)
+  els.rutrackerSourceTab?.classList.toggle('active', showRutracker)
   els.catalogSourcePanel?.classList.toggle('hidden', !showCatalog)
-  els.manualSourcePanel.classList.toggle('hidden', !showManual)
-  els.rutrackerPanel.classList.toggle('hidden', !showRutracker)
+  els.manualSourcePanel?.classList.toggle('hidden', !showManual)
+  els.rutrackerPanel?.classList.toggle('hidden', !showRutracker)
   if (showRutracker && state.rutrackerVisible) scheduleRutrackerBoundsUpdate()
-  if (!showRutracker) hideRutrackerView()
+  if (!showRutracker && els.rutrackerPanel) hideRutrackerView()
 }
 
 function setSourceTab(tab) {
@@ -910,7 +995,7 @@ function viewportBounds() {
 }
 
 function scheduleRutrackerBoundsUpdate() {
-  if (!state.rutrackerVisible || state.sourceTab !== 'rutracker') return
+  if (!state.rutrackerVisible) return
   if (state.rutrackerBoundsRequest) return
   state.rutrackerBoundsRequest = requestAnimationFrame(async () => {
     state.rutrackerBoundsRequest = null
@@ -956,8 +1041,21 @@ document.querySelectorAll('[data-i18n-value]').forEach(el => {
 
 els.joinBtn.addEventListener('click', joinRoom)
 els.catalogSourceTab?.addEventListener('click', () => setSourceTab('catalog'))
-els.manualSourceTab.addEventListener('click', () => setSourceTab('manual'))
-els.rutrackerSourceTab.addEventListener('click', () => showRutrackerView())
+els.manualSourceTab?.addEventListener('click', () => setSourceTab('manual'))
+els.rutrackerSourceTab?.addEventListener('click', () => showRutrackerView())
+els.themeToggleBtn?.addEventListener('click', () => applyTheme(state.theme === 'dark' ? 'light' : 'dark'))
+document.querySelectorAll('[data-media-filter]').forEach(button => {
+  button.classList.toggle('active', button.dataset.mediaFilter === state.mediaType)
+  button.addEventListener('click', () => setMediaType(button.dataset.mediaFilter))
+})
+document.querySelectorAll('[data-panel-tab]').forEach(button => {
+  button.addEventListener('click', () => {
+    const target = button.dataset.panelTab
+    document.querySelectorAll('[data-panel-tab]').forEach(item => item.classList.toggle('active', item === button))
+    document.getElementById('rightTorrentsPanel')?.classList.toggle('hidden', target !== 'torrents')
+    document.getElementById('rightInfoPanel')?.classList.toggle('hidden', target !== 'info')
+  })
+})
 els.sourceSearchBtn?.addEventListener('click', () => scheduleSearchCatalog(0))
 els.sourceSearchInput?.addEventListener('keydown', event => {
   if (event.key === 'Enter') {
@@ -966,6 +1064,13 @@ els.sourceSearchInput?.addEventListener('keydown', event => {
   }
 })
 els.detailImportBtn?.addEventListener('click', () => importSelectedSource())
+els.detailFavoriteBtn?.addEventListener('click', () => {
+  if (!state.selectedSourceResult) return
+  const key = `torrgether.favorite.${state.selectedSourceResult.id}`
+  const next = localStorage.getItem(key) !== '1'
+  localStorage.setItem(key, next ? '1' : '0')
+  els.detailFavoriteBtn.classList.toggle('active', next)
+})
 els.updateActionBtn?.addEventListener('click', () => {
   if (state.updateReleaseUrl) window.torrgether.openReleasePage(state.updateReleaseUrl)
 })
@@ -993,7 +1098,7 @@ els.chooseTorrentBtn.addEventListener('click', async () => {
 els.setMagnetBtn.addEventListener('click', async () => {
   await withButtonBusy(els.setMagnetBtn, 'buttons.loading', async () => {
     const magnetURI = els.magnetInput.value.trim()
-    if (!magnetURI.startsWith('magnet:?')) return logT('log.validMagnet')
+    if (!isValidMagnetURI(magnetURI)) return logT('log.validMagnet')
     await hostSetTorrentPayload({ kind: 'magnet', name: 'magnet', magnetURI })
   })
 })

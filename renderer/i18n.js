@@ -1,10 +1,11 @@
 const en = {
   'app.title': 'Torrgether',
-  'app.eyebrow': 'Torrgether 0.3.0',
+  'app.eyebrow': 'Torrgether',
   'app.heading': 'Torrgether',
   'app.subtitle': 'Synchronized legal torrent playback with MPV and RAM-only streaming.',
   'labels.language': 'UI language',
   'labels.audioLanguage': 'Audio language',
+  'nav.watch': 'Watch',
   'nav.home': 'Home',
   'nav.movies': 'Movies',
   'nav.series': 'Series',
@@ -14,7 +15,8 @@ const en = {
   'nav.downloads': 'Downloads',
   'nav.settings': 'Settings',
   'nav.categories': 'Categories',
-  'search.placeholder': 'Search legal movies, public-domain video...',
+  'theme.toggle': 'Toggle theme',
+  'search.placeholder': 'Search movies, series, anime...',
   'updates.available': 'Update {version} is available.',
   'updates.none': 'You are on the latest version.',
   'updates.error': 'Could not check updates: {error}',
@@ -54,7 +56,7 @@ const en = {
   'buttons.join': 'Join',
   'buttons.chooseTorrent': 'Choose .torrent',
   'buttons.load': 'Load',
-  'buttons.restartMpv': 'Restart MPV',
+  'buttons.restartMpv': 'Open MPV',
   'buttons.stopMpv': 'Stop MPV',
   'buttons.playPause': 'Play / Pause',
   'buttons.showLog': 'Show log',
@@ -70,6 +72,7 @@ const en = {
   'buttons.rutrackerReload': 'Reload',
   'buttons.search': 'Search',
   'buttons.watch': 'Watch',
+  'buttons.continue': 'Continue',
   'buttons.import': 'Import',
   'buttons.favorite': 'Favorite',
   'sources.title': 'Sources',
@@ -83,6 +86,7 @@ const en = {
   'sources.videoInside': 'Video inside torrent',
   'sources.results': 'Results',
   'sources.noResults': 'No source results yet.',
+  'sources.notPlayable': 'No legal torrent is attached to this catalog result. Import a .torrent or magnet manually.',
   'sources.languageFallback': 'No {language} audio results were found. Showing other languages.',
   'sources.importFailed': 'Could not import source: {error}',
   'sources.duplicates': '{count} variants',
@@ -99,7 +103,7 @@ const en = {
   'stream.peers': 'Peers',
   'stream.speed': 'Speed',
   'stream.time': 'Time',
-  'stream.file': 'File',
+  'stream.file': 'Files',
   'stream.ramCache': 'RAM cache',
   'stream.evictions': 'Evictions',
   'stream.refetch': 'Refetch',
@@ -125,6 +129,9 @@ const en = {
   'player.selectedHint': 'Selected {name}. MPV reads the local RAM-backed stream.',
   'player.title': 'Player',
   'player.subtitle': 'MPV IPC syncs playback with the room.',
+  'catalog.all': 'All',
+  'catalog.results': 'Catalog',
+  'catalog.similar': 'Similar',
   'catalog.popular': 'Popular',
   'catalog.continue': 'Continue watching',
   'catalog.new': 'New',
@@ -136,6 +143,7 @@ const en = {
   'catalog.leechers': 'Leechers',
   'catalog.language': 'Language',
   'catalog.provider': 'Provider',
+  'catalog.rating': 'Rating',
   'controls.title': 'MPV Controls',
   'controls.subtitle': 'Seek and pause commands sync to the room.',
   'controls.back': '-10 sec',
@@ -188,6 +196,7 @@ function complete(overrides) {
 const ru = complete({
   'labels.language': 'Язык интерфейса',
   'labels.audioLanguage': 'Язык озвучки',
+  'nav.watch': 'Просмотр',
   'nav.home': 'Главная',
   'nav.movies': 'Фильмы',
   'nav.series': 'Сериалы',
@@ -196,44 +205,174 @@ const ru = complete({
   'nav.history': 'История',
   'nav.downloads': 'Загрузки',
   'nav.settings': 'Настройки',
+  'nav.categories': 'Категории',
+  'theme.toggle': 'Сменить тему',
   'search.placeholder': 'Поиск фильмов, сериалов, аниме...',
   'status.offline': 'офлайн',
   'status.online': 'онлайн ({id})',
+  'status.badUrl': 'ошибка URL сервера',
+  'status.offlineReason': 'офлайн: {reason}',
+  'status.connectError': 'ошибка: {message}',
   'status.host': 'хост',
   'status.viewer': 'зритель',
+  'status.onlineWord': 'онлайн',
+  'status.offlineWord': 'офлайн',
+  'status.ready': 'готов',
+  'status.loadingTorrent': 'загрузка',
+  'mpv.ready': 'mpv: готов',
+  'mpv.missing': 'mpv: не найден',
+  'mpv.checking': 'mpv: проверка',
+  'mpv.required': 'Требуется MPV',
+  'mpv.notStarted': 'не запущен',
+  'mpv.notRunning': 'не запущен',
+  'mpv.starting': 'запуск...',
+  'mpv.stopped': 'остановлен',
+  'mpv.playing': 'воспроизведение',
+  'mpv.paused': 'пауза',
   'room.title': 'Комната',
+  'room.signalingUrl': 'URL сервера',
+  'room.serverToken': 'Токен сервера',
+  'room.optional': 'необязательно',
+  'room.room': 'Комната',
+  'room.name': 'Имя',
+  'room.defaultName': 'Зритель',
   'buttons.join': 'Войти',
+  'buttons.chooseTorrent': 'Выбрать .torrent',
+  'buttons.load': 'Загрузить',
+  'buttons.restartMpv': 'Открыть MPV',
+  'buttons.stopMpv': 'Остановить MPV',
+  'buttons.playPause': 'Пуск / Пауза',
+  'buttons.showLog': 'Показать лог',
+  'buttons.openLogs': 'Открыть логи',
+  'buttons.choosing': 'Выбор...',
+  'buttons.loading': 'Загрузка...',
+  'buttons.opening': 'Открываю...',
+  'buttons.stopping': 'Остановка...',
+  'buttons.rutrackerOpen': 'Открыть RuTracker',
+  'buttons.rutrackerClose': 'Скрыть',
+  'buttons.rutrackerBack': 'Назад',
+  'buttons.rutrackerForward': 'Вперед',
+  'buttons.rutrackerReload': 'Обновить',
+  'buttons.search': 'Поиск',
   'buttons.watch': 'Смотреть',
+  'buttons.continue': 'Продолжить',
   'buttons.import': 'Импорт',
+  'buttons.favorite': 'В избранное',
   'sources.title': 'Источники',
+  'sources.magnetPlaceholder': 'или вставьте magnet URI',
+  'sources.videoInside': 'Видео внутри торрента',
   'sources.noResults': 'Пока нет результатов.',
+  'sources.notPlayable': 'К этому результату нет легального торрента. Импортируйте .torrent или magnet вручную.',
   'sources.languageFallback': 'На языке {language} ничего не найдено. Показываю другие языки.',
-  'stream.title': 'Поток',
+  'sources.importFailed': 'Не удалось импортировать источник: {error}',
+  'sources.duplicates': '{count} вариантов',
+  'rutracker.subtitle': 'Откройте изолированную панель RuTracker и импортируйте magnet или .torrent в RAM.',
+  'rutracker.placeholder': 'RuTracker откроется здесь.',
+  'rutracker.ready': 'Панель RuTracker готова',
+  'rutracker.hidden': 'RuTracker скрыт',
+  'rutracker.importing': 'Импорт из RuTracker...',
+  'rutracker.importedMagnet': 'Magnet из RuTracker импортирован.',
+  'rutracker.importedTorrent': '.torrent из RuTracker импортирован.',
+  'rutracker.error': 'Ошибка RuTracker: {error}',
+  'stream.peers': 'Пиры',
+  'stream.speed': 'Скорость',
+  'stream.time': 'Время',
+  'stream.file': 'Файлы',
+  'stream.ramCache': 'RAM-кэш',
+  'stream.evictions': 'Вытеснения',
+  'stream.refetch': 'Дозагрузка',
+  'stream.pending': 'Ожидания',
+  'stream.cachePressure': 'Давление',
+  'stream.pressureLow': 'низкое',
+  'stream.pressureWatch': 'следить',
+  'stream.pressureHigh': 'высокое',
+  'stream.peerCount': '{count} пиров',
+  'stream.speedText': 'вниз {down} / вверх {up}',
+  'stream.mpvCacheEmpty': 'MPV кэш: -',
+  'stream.cacheSummary': 'RAM {used} / {max}, чанки: {chunks}, recent: {recent}, piece: {piece}, {mpv}',
+  'stream.overLimit': ', превышение: {over}',
+  'stream.lowMpvBuffer': ', мало буфера MPV',
+  'stream.starved': 'Кэш не успевает',
   'participants.title': 'Участники',
   'player.noVideo': 'Видео не выбрано',
+  'player.chooseHint': 'Выберите результат каталога, .torrent или magnet.',
+  'player.mpvMissingHint': 'Перед просмотром нужен MPV.',
+  'player.selectedVideo': 'Выбранное видео',
+  'player.selectedHint': 'Выбрано {name}. MPV читает локальный RAM-поток.',
+  'player.title': 'Плеер',
+  'catalog.all': 'Все',
+  'catalog.results': 'Каталог',
+  'catalog.similar': 'Похожие',
   'catalog.popular': 'Популярное',
   'catalog.continue': 'Продолжить просмотр',
   'catalog.new': 'Новинки',
   'catalog.torrents': 'Торренты',
   'catalog.info': 'Информация',
-  'events.title': 'События'
+  'catalog.quality': 'Качество',
+  'catalog.size': 'Размер',
+  'catalog.seeders': 'Сиды',
+  'catalog.leechers': 'Личи',
+  'catalog.language': 'Язык',
+  'catalog.provider': 'Источник',
+  'catalog.rating': 'Рейтинг',
+  'controls.title': 'Управление MPV',
+  'controls.back': '-10 сек',
+  'controls.forward': '+10 сек',
+  'diagnostics.title': 'Диагностика',
+  'diagnostics.summary': 'Диагностика MPV',
+  'diagnostics.log': 'Лог:',
+  'diagnostics.memory': 'память текущей сессии',
+  'events.title': 'События',
+  'log.logsAt': 'Логи записываются в: {path}',
+  'log.configFailed': 'Не удалось прочитать конфиг: {error}',
+  'log.mpvMissing': 'MPV не найден. Перезапустите установщик или добавьте mpv в PATH.',
+  'log.mpvPreflightFailed': 'Проверка MPV не прошла: {error}',
+  'log.actionFailed': 'Действие не выполнено: {error}',
+  'log.mpvLogFailed': 'Не удалось прочитать лог MPV: {error}',
+  'log.latestMpvStderr': 'Последний stderr MPV: {stderr}',
+  'log.reportReadyFailed': 'Не удалось сообщить готовность торрента: {error}',
+  'log.chooseTorrentFirst': 'Сначала выберите торрент/видео.',
+  'log.mpvDidNotStart': 'MPV не запустился: {error}. Проверьте диагностику.',
+  'log.mpvStarted': 'MPV запущен ({reason}).',
+  'log.loadingTorrent': 'Загружаю торрент в RAM: {name}',
+  'log.torrentError': 'Ошибка торрента: {error}',
+  'log.readyForStreaming': 'Готово к RAM-стримингу: {name}',
+  'log.joinedRoom': 'Вошли в комнату {room}',
+  'log.joinFailed': 'Не удалось войти: {error}',
+  'log.connectionLost': 'Соединение потеряно: {reason}. Клиент переподключится.',
+  'log.signalingError': 'Ошибка сигналинга: {message}',
+  'log.badSignalingUrl': 'Неверный URL сервера: {message}',
+  'log.hostOnly': 'Только хост может выбрать торрент.',
+  'log.validMagnet': 'Вставьте корректный magnet URI.',
+  'log.serverRejected': 'Сервер отклонил торрент: {error}',
+  'log.torrentSent': 'Торрент отправлен в комнату. Поток работает из RAM.',
+  'log.controlFailed': 'Не удалось отправить управление: {error}',
+  'log.mpvNotRunning': 'MPV не запущен.',
+  'log.openTorrentFailed': 'Не удалось открыть .torrent: {error}',
+  'log.invalidFileIndex': 'Неверный индекс файла.',
+  'log.openLogsFailed': 'Не удалось открыть папку логов: {error}',
+  'log.heartbeatFailed': 'Не удалось отправить heartbeat: {error}',
+  'log.statusFailed': 'Не удалось обновить статус торрента: {error}',
+  'log.mpvStopped': 'MPV остановлен: {error}',
+  'log.mpvStatusFailed': 'Не удалось обновить статус MPV: {error}',
+  'log.torrentWarning': 'Предупреждение/ошибка торрента: {message}'
 })
 
-const uk = complete({ 'labels.language': 'Мова інтерфейсу', 'labels.audioLanguage': 'Мова озвучення', 'nav.home': 'Головна', 'nav.movies': 'Фільми', 'buttons.watch': 'Дивитись', 'catalog.torrents': 'Торенти' })
-const zhCN = complete({ 'labels.language': '界面语言', 'labels.audioLanguage': '音频语言', 'nav.home': '主页', 'nav.movies': '电影', 'buttons.watch': '观看', 'catalog.torrents': '种子' })
-const ja = complete({ 'labels.language': '表示言語', 'labels.audioLanguage': '音声言語', 'nav.home': 'ホーム', 'nav.movies': '映画', 'buttons.watch': '見る', 'catalog.torrents': 'トレント' })
-const ko = complete({ 'labels.language': 'UI 언어', 'labels.audioLanguage': '오디오 언어', 'nav.home': '홈', 'nav.movies': '영화', 'buttons.watch': '보기', 'catalog.torrents': '토렌트' })
-const es = complete({ 'labels.language': 'Idioma de interfaz', 'labels.audioLanguage': 'Idioma de audio', 'nav.home': 'Inicio', 'nav.movies': 'Películas', 'buttons.watch': 'Ver', 'catalog.torrents': 'Torrents' })
-const ptBR = complete({ 'labels.language': 'Idioma da interface', 'labels.audioLanguage': 'Idioma do áudio', 'nav.home': 'Início', 'nav.movies': 'Filmes', 'buttons.watch': 'Assistir', 'catalog.torrents': 'Torrents' })
-const fr = complete({ 'labels.language': 'Langue de l’interface', 'labels.audioLanguage': 'Langue audio', 'nav.home': 'Accueil', 'nav.movies': 'Films', 'buttons.watch': 'Regarder', 'catalog.torrents': 'Torrents' })
-const de = complete({ 'labels.language': 'Oberflächensprache', 'labels.audioLanguage': 'Audiosprache', 'nav.home': 'Start', 'nav.movies': 'Filme', 'buttons.watch': 'Ansehen', 'catalog.torrents': 'Torrents' })
-const it = complete({ 'labels.language': 'Lingua interfaccia', 'labels.audioLanguage': 'Lingua audio', 'nav.home': 'Home', 'nav.movies': 'Film', 'buttons.watch': 'Guarda', 'catalog.torrents': 'Torrent' })
-const pl = complete({ 'labels.language': 'Język interfejsu', 'labels.audioLanguage': 'Język audio', 'nav.home': 'Start', 'nav.movies': 'Filmy', 'buttons.watch': 'Oglądaj', 'catalog.torrents': 'Torrenty' })
-const tr = complete({ 'labels.language': 'Arayüz dili', 'labels.audioLanguage': 'Ses dili', 'nav.home': 'Ana sayfa', 'nav.movies': 'Filmler', 'buttons.watch': 'İzle', 'catalog.torrents': 'Torrentler' })
-const ar = complete({ 'labels.language': 'لغة الواجهة', 'labels.audioLanguage': 'لغة الصوت', 'nav.home': 'الرئيسية', 'nav.movies': 'أفلام', 'buttons.watch': 'مشاهدة', 'catalog.torrents': 'تورنت' })
-const hi = complete({ 'labels.language': 'इंटरफ़ेस भाषा', 'labels.audioLanguage': 'ऑडियो भाषा', 'nav.home': 'होम', 'nav.movies': 'फ़िल्में', 'buttons.watch': 'देखें', 'catalog.torrents': 'टोरेंट' })
-const id = complete({ 'labels.language': 'Bahasa UI', 'labels.audioLanguage': 'Bahasa audio', 'nav.home': 'Beranda', 'nav.movies': 'Film', 'buttons.watch': 'Tonton', 'catalog.torrents': 'Torrent' })
-const vi = complete({ 'labels.language': 'Ngôn ngữ giao diện', 'labels.audioLanguage': 'Ngôn ngữ âm thanh', 'nav.home': 'Trang chủ', 'nav.movies': 'Phim', 'buttons.watch': 'Xem', 'catalog.torrents': 'Torrent' })
+const uk = complete({ 'labels.language': 'Мова інтерфейсу', 'labels.audioLanguage': 'Мова озвучення', 'nav.watch': 'Перегляд', 'nav.movies': 'Фільми', 'nav.series': 'Серіали', 'nav.anime': 'Аніме', 'buttons.watch': 'Дивитись' })
+const zhCN = complete({ 'labels.language': '界面语言', 'labels.audioLanguage': '音频语言', 'nav.watch': '观看', 'nav.movies': '电影', 'nav.series': '剧集', 'nav.anime': '动漫' })
+const ja = complete({ 'labels.language': '表示言語', 'labels.audioLanguage': '音声言語', 'nav.watch': '視聴', 'nav.movies': '映画', 'nav.series': 'シリーズ', 'nav.anime': 'アニメ' })
+const ko = complete({ 'labels.language': 'UI 언어', 'labels.audioLanguage': '오디오 언어', 'nav.watch': '보기', 'nav.movies': '영화', 'nav.series': '시리즈', 'nav.anime': '애니메이션' })
+const es = complete({ 'labels.language': 'Idioma de interfaz', 'labels.audioLanguage': 'Idioma de audio', 'nav.watch': 'Ver', 'nav.movies': 'Películas', 'nav.series': 'Series', 'nav.anime': 'Anime' })
+const ptBR = complete({ 'labels.language': 'Idioma da interface', 'labels.audioLanguage': 'Idioma do áudio', 'nav.watch': 'Assistir', 'nav.movies': 'Filmes', 'nav.series': 'Séries', 'nav.anime': 'Anime' })
+const fr = complete({ 'labels.language': 'Langue de l’interface', 'labels.audioLanguage': 'Langue audio', 'nav.watch': 'Regarder', 'nav.movies': 'Films', 'nav.series': 'Séries', 'nav.anime': 'Anime' })
+const de = complete({ 'labels.language': 'Oberflächensprache', 'labels.audioLanguage': 'Audiosprache', 'nav.watch': 'Ansehen', 'nav.movies': 'Filme', 'nav.series': 'Serien', 'nav.anime': 'Anime' })
+const it = complete({ 'labels.language': 'Lingua interfaccia', 'labels.audioLanguage': 'Lingua audio', 'nav.watch': 'Guarda', 'nav.movies': 'Film', 'nav.series': 'Serie', 'nav.anime': 'Anime' })
+const pl = complete({ 'labels.language': 'Język interfejsu', 'labels.audioLanguage': 'Język audio', 'nav.watch': 'Oglądaj', 'nav.movies': 'Filmy', 'nav.series': 'Seriale', 'nav.anime': 'Anime' })
+const tr = complete({ 'labels.language': 'Arayüz dili', 'labels.audioLanguage': 'Ses dili', 'nav.watch': 'İzle', 'nav.movies': 'Filmler', 'nav.series': 'Diziler', 'nav.anime': 'Anime' })
+const ar = complete({ 'labels.language': 'لغة الواجهة', 'labels.audioLanguage': 'لغة الصوت', 'nav.watch': 'مشاهدة', 'nav.movies': 'أفلام', 'nav.series': 'مسلسلات', 'nav.anime': 'أنمي' })
+const hi = complete({ 'labels.language': 'इंटरफ़ेस भाषा', 'labels.audioLanguage': 'ऑडियो भाषा', 'nav.watch': 'देखें', 'nav.movies': 'फ़िल्में', 'nav.series': 'सीरीज़', 'nav.anime': 'ऐनिमे' })
+const id = complete({ 'labels.language': 'Bahasa UI', 'labels.audioLanguage': 'Bahasa audio', 'nav.watch': 'Tonton', 'nav.movies': 'Film', 'nav.series': 'Serial', 'nav.anime': 'Anime' })
+const vi = complete({ 'labels.language': 'Ngôn ngữ giao diện', 'labels.audioLanguage': 'Ngôn ngữ âm thanh', 'nav.watch': 'Xem', 'nav.movies': 'Phim', 'nav.series': 'Phim bộ', 'nav.anime': 'Anime' })
 
 export const locales = {
   en,
@@ -332,13 +471,10 @@ export function applyTranslations(root, locale) {
   root.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
     el.setAttribute('placeholder', translate(locale, el.dataset.i18nPlaceholder))
   })
-  root.querySelectorAll('[data-i18n-value]').forEach(el => {
-    if (!el.dataset.userEdited) el.value = translate(locale, el.dataset.i18nValue)
-  })
   root.querySelectorAll('[data-i18n-title]').forEach(el => {
     el.setAttribute('title', translate(locale, el.dataset.i18nTitle))
   })
-  root.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
-    el.setAttribute('aria-label', translate(locale, el.dataset.i18nAriaLabel))
+  root.querySelectorAll('[data-i18n-value]').forEach(el => {
+    if (!el.value) el.value = translate(locale, el.dataset.i18nValue)
   })
 }
