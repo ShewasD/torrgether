@@ -15,12 +15,17 @@ export function toSafeUrl(value) {
   }
 }
 
+const RUTRACKER_HOSTS = new Set([
+  'rutracker.org',
+  'www.rutracker.org'
+])
+
 export function isRutrackerTopLevelUrl(value) {
   const url = toSafeUrl(value)
   if (!url) return false
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
+  if (url.protocol !== 'https:') return false
   const hostname = url.hostname.toLowerCase()
-  return hostname === 'rutracker.org' || hostname.endsWith('.rutracker.org')
+  return RUTRACKER_HOSTS.has(hostname)
 }
 
 export function isMagnetUrl(value) {

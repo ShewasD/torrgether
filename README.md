@@ -210,7 +210,7 @@ npm run pack
   on the signaling server.
 - Playback stalls: lower `MPV_CACHE_SECS`, lower video quality, or increase
   `MAX_MEMORY_MB` if the machine has enough RAM.
-- Release artifacts for this line use version `0.4.1` and tag `v0.4.1`.
+- Release artifacts for this line use version `0.4.3` and tag `v0.4.3`.
 
 ## Legal Use
 

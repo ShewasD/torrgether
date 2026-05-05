@@ -2,17 +2,26 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 
-test('renderer is MPV-only and does not include HTML video playback', async () => {
+test('renderer exposes embedded fallback and MPV controls', async () => {
   const [html, renderer] = await Promise.all([
     fs.readFile(new URL('../renderer/index.html', import.meta.url), 'utf8'),
     fs.readFile(new URL('../renderer/renderer.js', import.meta.url), 'utf8')
   ])
 
-  assert.equal(html.includes('<video'), false)
-  assert.equal(renderer.includes('els.player'), false)
-  assert.equal(renderer.includes("addEventListener('play'"), false)
+  assert.match(html, /<video id="embeddedPlayer"/)
   assert.equal(renderer.includes('MEDIA_ERR_'), false)
+  assert.match(renderer, /embeddedPlayer\?\.addEventListener\('play'/)
+  assert.match(renderer, /startEmbeddedPlayer/)
   assert.match(renderer, /launchMpv/)
+})
+
+test('renderer does not block torrent loading when MPV is missing', async () => {
+  const renderer = await fs.readFile(new URL('../renderer/renderer.js', import.meta.url), 'utf8')
+
+  assert.match(renderer, /chooseTorrentBtn\) els\.chooseTorrentBtn\.disabled = !state\.isHost/)
+  assert.match(renderer, /setMagnetBtn\) els\.setMagnetBtn\.disabled = !state\.isHost/)
+  assert.equal(renderer.includes('detailImportBtn) els.detailImportBtn.disabled = !state.isHost || !state.selectedSourceResult || !isPlayableResult(state.selectedSourceResult) || !hasMpv'), false)
+  assert.match(renderer, /MPV unavailable/)
 })
 
 test('renderer avoids stale catalog and torrent payload hazards', async () => {

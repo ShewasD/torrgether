@@ -11,13 +11,15 @@ function tokenValue(value) {
 
 export function tokenFromHandshake(handshake = {}) {
   const authorization = tokenValue(handshake.headers?.['authorization'])
+  const bearerMatch = /^Bearer\s+(\S+)$/i.exec(authorization)
+  const bearerToken = bearerMatch ? bearerMatch[1] : ''
   return (
     tokenValue(handshake.auth?.serverToken) ||
     tokenValue(handshake.auth?.token) ||
     tokenValue(handshake.query?.serverToken) ||
     tokenValue(handshake.query?.token) ||
     tokenValue(handshake.headers?.['x-server-token']) ||
-    authorization.replace(/^Bearer\s+/i, '') ||
+    bearerToken ||
     ''
   )
 }
@@ -39,7 +41,11 @@ function tokenFingerprint(handshake) {
 }
 
 function handshakeAddress(handshake = {}) {
-  return String(handshake.address || handshake.headers?.['x-forwarded-for'] || 'unknown').split(',')[0].trim()
+  const trustProxy = ['1', 'true', 'yes'].includes(String(process.env.TRUST_PROXY || '').toLowerCase())
+  const source = trustProxy
+    ? (handshake.headers?.['x-forwarded-for'] || handshake.address)
+    : handshake.address
+  return String(source || 'unknown').split(',')[0].trim()
 }
 
 export function createAuthRateLimiter({

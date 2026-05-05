@@ -20,6 +20,9 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
+      - name: Bundle MPV runtime
+        shell: pwsh
+        run: .\build\install-mpv.ps1 -InstallDir "$PWD" -SevenZipPath ".\node_modules\7zip-bin\win\x64\7za.exe" -Force
       - run: npm run dist:win
       - uses: actions/upload-artifact@v4
         with:

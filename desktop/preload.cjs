@@ -12,6 +12,11 @@ function appLog(level, message, data) {
   } catch {}
 }
 
+let _torrentErrorHandler = null
+let _playerLogHandler = null
+let _rutrackerImportHandler = null
+let _rutrackerStatusHandler = null
+
 function closeSocket() {
   if (!socket) return
   socket.disconnect()
@@ -21,7 +26,7 @@ function closeSocket() {
 }
 
 contextBridge.exposeInMainWorld('torrgether', {
-  connectSocket(url, opts) {
+  connectSocket(url, opts = {}) {
     closeSocket()
     socket = io(url, {
       transports: ['websocket', 'polling'],
@@ -30,7 +35,9 @@ contextBridge.exposeInMainWorld('torrgether', {
       reconnectionDelay: 600,
       reconnectionDelayMax: 3000,
       timeout: 15000,
-      ...opts
+      auth: {
+        serverToken: opts?.auth?.serverToken || ''
+      }
     })
     appLog('info', 'Socket connection requested', {
       url,
@@ -135,19 +142,23 @@ contextBridge.exposeInMainWorld('torrgether', {
   rutrackerReload: () => ipcRenderer.invoke('rutracker:reload'),
   writeAppLog: payload => ipcRenderer.send('app:log', payload),
   onTorrentError(callback) {
-    ipcRenderer.removeAllListeners('torrent:error')
-    ipcRenderer.on('torrent:error', (_event, payload) => callback(payload))
+    if (_torrentErrorHandler) ipcRenderer.removeListener('torrent:error', _torrentErrorHandler)
+    _torrentErrorHandler = (_event, payload) => callback(payload)
+    ipcRenderer.on('torrent:error', _torrentErrorHandler)
   },
   onPlayerLog(callback) {
-    ipcRenderer.removeAllListeners('player:log')
-    ipcRenderer.on('player:log', (_event, payload) => callback(payload))
+    if (_playerLogHandler) ipcRenderer.removeListener('player:log', _playerLogHandler)
+    _playerLogHandler = (_event, payload) => callback(payload)
+    ipcRenderer.on('player:log', _playerLogHandler)
   },
   onRutrackerImport(callback) {
-    ipcRenderer.removeAllListeners('rutracker:import')
-    ipcRenderer.on('rutracker:import', (_event, payload) => callback(payload))
+    if (_rutrackerImportHandler) ipcRenderer.removeListener('rutracker:import', _rutrackerImportHandler)
+    _rutrackerImportHandler = (_event, payload) => callback(payload)
+    ipcRenderer.on('rutracker:import', _rutrackerImportHandler)
   },
   onRutrackerStatus(callback) {
-    ipcRenderer.removeAllListeners('rutracker:status')
-    ipcRenderer.on('rutracker:status', (_event, payload) => callback(payload))
+    if (_rutrackerStatusHandler) ipcRenderer.removeListener('rutracker:status', _rutrackerStatusHandler)
+    _rutrackerStatusHandler = (_event, payload) => callback(payload)
+    ipcRenderer.on('rutracker:status', _rutrackerStatusHandler)
   }
 })

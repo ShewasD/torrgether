@@ -10,3 +10,11 @@ test('Windows MPV installer handles PowerShell 5 web responses and wildcard copy
   assert.match(script, /\$Content\s+-is\s+\[byte\[\]\]/)
   assert.match(script, /Copy-Item\s+-Path\s+\(Join-Path \$mpvSourceDir '\*'\)/)
 })
+
+test('release workflow bundles MPV before building the Windows installer', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')
+
+  assert.match(workflow, /Bundle MPV runtime/)
+  assert.match(workflow, /install-mpv\.ps1 -InstallDir "\$PWD"/)
+  assert.match(workflow, /npm run dist:win/)
+})

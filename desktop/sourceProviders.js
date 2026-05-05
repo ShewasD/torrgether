@@ -411,7 +411,8 @@ export async function searchCatalog(query = '', filters = {}, fetchImpl = global
   const results = []
   await Promise.all(tasks.map(async ([providerId, task]) => {
     try {
-      results.push(...await task())
+      const taskResults = await task()
+      for (const r of taskResults) results.push(r)
     } catch (err) {
       warnings.push({ providerId, message: err.message || String(err) })
     }

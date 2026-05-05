@@ -18,6 +18,7 @@ trap cleanup_tmp EXIT
 RUN=0
 BUILD_LINUX=0
 BUILD_WIN=0
+BUILD_MAC=0
 USER_PATH=0
 SYSTEM_PATH=0
 INSTALL_MPV=0
@@ -26,11 +27,12 @@ for arg in "$@"; do
     --run) RUN=1 ;;
     --build-linux) BUILD_LINUX=1 ;;
     --build-win) BUILD_WIN=1 ;;
+    --build-mac) BUILD_MAC=1 ;;
     --user-path) USER_PATH=1 ;;
     --system-path) SYSTEM_PATH=1 ;;
     --install-mpv) INSTALL_MPV=1 ;;
     --help|-h)
-      echo "Usage: ./install.sh [--run] [--build-linux] [--build-win] [--user-path] [--system-path] [--install-mpv]"
+      echo "Usage: ./install.sh [--run] [--build-linux] [--build-win] [--build-mac] [--user-path] [--system-path] [--install-mpv]"
       exit 0
       ;;
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
@@ -248,3 +250,4 @@ if [[ "$RUN" == "1" ]]; then
 fi
 if [[ "$BUILD_LINUX" == "1" ]]; then npm run dist:linux; fi
 if [[ "$BUILD_WIN" == "1" ]]; then npm run dist:win; fi
+if [[ "$BUILD_MAC" == "1" ]]; then npm run dist:mac; fi

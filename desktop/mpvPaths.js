@@ -43,6 +43,15 @@ export function getMpvCandidates({
     return candidates
   }
 
+  if (platform === 'darwin') {
+    pushCandidate(candidates, '/Applications/mpv.app/Contents/MacOS/mpv')
+    pushCandidate(candidates, joinIfBase(pathApi, env.HOME, 'Applications', 'mpv.app', 'Contents', 'MacOS', 'mpv'))
+    pushCandidate(candidates, '/opt/homebrew/bin/mpv')
+    pushCandidate(candidates, '/usr/local/bin/mpv')
+    pushCandidate(candidates, '/usr/bin/mpv')
+    return candidates
+  }
+
   pushCandidate(candidates, '/usr/bin/mpv')
   pushCandidate(candidates, '/usr/local/bin/mpv')
   pushCandidate(candidates, '/snap/bin/mpv')

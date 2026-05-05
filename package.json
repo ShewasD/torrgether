@@ -1,6 +1,6 @@
 {
   "name": "torrgether",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Legal co-watching desktop app with catalog browsing, update checks, MPV control, and RAM-only torrent streaming.",
   "author": "ShewasD <130910070+ShewasD@users.noreply.github.com>",
   "private": true,
@@ -17,7 +17,8 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win nsis --publish never",
-    "dist:linux": "electron-builder --linux AppImage deb --publish never"
+    "dist:linux": "electron-builder --linux AppImage deb --publish never",
+    "dist:mac": "electron-builder --mac dmg zip --publish never"
   },
   "build": {
     "appId": "com.torrgether.app",
@@ -91,6 +92,26 @@
       "maintainer": "ShewasD <130910070+ShewasD@users.noreply.github.com>",
       "artifactName": "${productName}-${version}.${ext}"
     },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "category": "public.app-category.entertainment"
+    },
     "deb": {
       "depends": [
         "libgtk-3-0",
@@ -116,6 +137,7 @@
     "webtorrent": "2.8.5"
   },
   "devDependencies": {
+    "7zip-bin": "^5.2.0",
     "concurrently": "^9.2.1",
     "electron": "^35.0.0",
     "electron-builder": "^26.0.12",

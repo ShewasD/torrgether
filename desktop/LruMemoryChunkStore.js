@@ -101,7 +101,12 @@ export default class LruMemoryChunkStore {
     this.lastOverLimitWarningAt = 0
     this.pendingReads = new Map()
 
-    if (this.torrent) this.torrent._torrgetherRamStore = this
+    if (this.torrent) {
+      this.torrent._torrgetherRamStore = this
+      if (typeof this.torrent._markUnverified !== 'function') {
+        console.warn('LruMemoryChunkStore: WebTorrent _markUnverified is missing; stale-read recovery may not work correctly.')
+      }
+    }
   }
 
   get pendingReadCount() {
@@ -427,24 +432,20 @@ export default class LruMemoryChunkStore {
     const torrent = this.torrent
     if (!torrent || torrent.destroyed) return
 
-    try {
-      if (torrent.bitfield?.get?.(index) && typeof torrent._markUnverified === 'function') {
-        torrent._markUnverified(index)
-        this.unverifiedMarks += 1
-      }
-    } catch {}
+    if (torrent.bitfield?.get?.(index) && typeof torrent._markUnverified === 'function') {
+      torrent._markUnverified(index)
+      this.unverifiedMarks += 1
+    }
 
     this._ensurePieceCanBeReserved(index)
 
     if (requestNow) {
-      try {
-        if (typeof torrent.select === 'function') torrent.select(index, index, 2)
-      } catch {}
-      try { torrent.critical?.(index, index) } catch {}
+      if (typeof torrent.select === 'function') torrent.select(index, index, 2)
+      if (typeof torrent.critical === 'function') torrent.critical(index, index)
     }
 
-    try { torrent._updateSelections?.() } catch {}
-    try { torrent._update?.() } catch {}
+    if (typeof torrent._updateSelections === 'function') torrent._updateSelections()
+    if (typeof torrent._update === 'function') torrent._update()
   }
 
   _ensurePieceCanBeReserved(index) {

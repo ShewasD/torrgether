@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src https: data:; connect-src 'self' ws: wss: http: https:; font-src 'self'; media-src 'self' blob:;">
   <title>Torrgether</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
@@ -16,6 +17,8 @@
 
       <nav class="nav-list" aria-label="Primary">
         <button class="nav-item active" type="button" data-i18n="nav.watch">Просмотр</button>
+        <button class="nav-item" type="button" data-i18n="nav.room">Room</button>
+        <button class="nav-item" type="button" data-i18n="nav.settings">Settings</button>
       </nav>
 
       <section class="profile-strip">
@@ -91,9 +94,11 @@
         <button id="updateDismissBtn" class="icon-button" type="button" data-i18n-title="updates.dismiss" title="Dismiss">×</button>
       </section>
 
+      <section id="watchWorkspace" class="workspace-tab">
       <section class="watch-layout">
         <section class="watch-main">
           <section class="player-preview">
+            <video id="embeddedPlayer" class="embedded-player hidden" playsinline controls preload="metadata"></video>
             <img id="detailBackdrop" alt="" src="https://archive.org/services/img/Sintel" />
             <div class="player-shade"></div>
             <div class="player-center-controls">
@@ -192,73 +197,61 @@
             <label for="fileSelect" data-i18n="sources.videoInside">Video inside torrent</label>
             <select id="fileSelect" disabled></select>
           </section>
-
-          <section class="panel-section">
-            <h2 data-i18n="player.title">Плеер</h2>
-            <span id="mpvStatus" class="pill" data-i18n="mpv.notStarted">not started</span>
-            <div class="player-settings">
-              <label for="qualitySelect" data-i18n="catalog.quality">Quality</label>
-              <select id="qualitySelect">
-                <option>Авто</option>
-                <option>1080p</option>
-                <option>720p</option>
-              </select>
-              <label for="subtitleSelect">Subtitles</label>
-              <select id="subtitleSelect">
-                <option>Off</option>
-                <option>Русские</option>
-                <option>English</option>
-              </select>
-              <div class="speed-pills" aria-label="Playback speed">
-                <button type="button">0.75x</button>
-                <button class="active" type="button">1x</button>
-                <button type="button">1.25x</button>
-                <button type="button">1.5x</button>
-              </div>
-              <button id="showMpvLogsBtn" type="button" data-i18n="buttons.showLog">Show log</button>
-            </div>
-          </section>
-
-          <section class="room-box">
-            <h2 data-i18n="room.title">Room</h2>
-            <label for="serverUrl" data-i18n="room.signalingUrl">Signaling URL</label>
-            <input id="serverUrl" value="http://localhost:3000" />
-            <label for="serverToken" data-i18n="room.serverToken">Server token</label>
-            <input id="serverToken" type="password" autocomplete="off" data-i18n-placeholder="room.optional" placeholder="optional" />
-            <div class="two-col">
-              <div>
-                <label for="roomId" data-i18n="room.room">Room</label>
-                <input id="roomId" value="demo-room" />
-              </div>
-              <div>
-                <label for="displayName" data-i18n="room.name">Name</label>
-                <input id="displayName" value="Viewer" data-i18n-value="room.defaultName" />
-              </div>
-            </div>
-            <button id="joinBtn" class="primary full" data-i18n="buttons.join">Join</button>
-          </section>
-
-          <section class="panel-section">
-            <h2 data-i18n="participants.title">Participants</h2>
-            <ul id="members" class="members"></ul>
-          </section>
-
-          <section class="panel-section">
-            <h2 data-i18n="diagnostics.title">Diagnostics</h2>
-            <details class="debug-box">
-              <summary data-i18n="diagnostics.summary">MPV diagnostics</summary>
-              <p class="muted small"><span data-i18n="diagnostics.log">Log:</span> <code id="mpvLogPath" data-i18n="diagnostics.memory">current session memory</code></p>
-              <button id="openLogsFolderBtn" data-i18n="buttons.openLogs">Open logs</button>
-              <pre id="mpvLog" class="mpv-log"></pre>
-            </details>
-          </section>
-
-          <section class="panel-section">
-            <h2 data-i18n="events.title">Events</h2>
-            <pre id="log" class="app-log"></pre>
-          </section>
         </aside>
       </section>
+      </section>
+
+    <section id="roomWorkspace" class="workspace-tab hidden">
+      <div class="room-layout">
+        <section class="room-box">
+          <h2 data-i18n="room.title">Room</h2>
+          <label for="serverUrl" data-i18n="room.signalingUrl">Signaling URL</label>
+          <input id="serverUrl" value="http://localhost:3000" />
+          <label for="serverToken" data-i18n="room.serverToken">Server token</label>
+          <input id="serverToken" type="password" autocomplete="off" data-i18n-placeholder="room.optional" placeholder="optional" />
+          <div class="two-col">
+            <div>
+              <label for="roomId" data-i18n="room.room">Room</label>
+              <input id="roomId" value="demo-room" />
+            </div>
+            <div>
+              <label for="displayName" data-i18n="room.name">Name</label>
+              <input id="displayName" value="Viewer" data-i18n-value="room.defaultName" />
+            </div>
+          </div>
+          <button id="joinBtn" class="primary full" data-i18n="buttons.join">Join</button>
+        </section>
+        <section class="panel-section">
+          <h2 data-i18n="participants.title">Participants</h2>
+          <ul id="members" class="members"></ul>
+        </section>
+      </div>
+    </section>
+
+    <section id="settingsWorkspace" class="workspace-tab hidden">
+      <div class="settings-layout">
+        <section class="panel-section">
+          <h2 data-i18n="player.title">Player</h2>
+          <span id="mpvStatus" class="pill" data-i18n="mpv.notStarted">not started</span>
+          <p class="muted small" data-i18n="player.advancedHint">Advanced controls (quality, subtitles, speed) are managed in MPV.</p>
+          <button id="showMpvLogsBtn" type="button" data-i18n="buttons.showLog">Show log</button>
+        </section>
+        <section class="panel-section">
+          <h2 data-i18n="diagnostics.title">Diagnostics</h2>
+          <details class="debug-box">
+            <summary data-i18n="diagnostics.summary">MPV diagnostics</summary>
+            <p class="muted small"><span data-i18n="diagnostics.log">Log:</span> <code id="mpvLogPath" data-i18n="diagnostics.memory">current session memory</code></p>
+            <button id="openLogsFolderBtn" data-i18n="buttons.openLogs">Open logs</button>
+            <pre id="mpvLog" class="mpv-log"></pre>
+          </details>
+        </section>
+        <section class="panel-section">
+          <h2 data-i18n="events.title">Events</h2>
+          <pre id="log" class="app-log"></pre>
+        </section>
+      </div>
+    </section>
+
     </section>
 
     <span id="ramShortStatus" class="hidden">-</span>

@@ -33,6 +33,13 @@ export function normalizeClientId(value) {
   return trimmed
 }
 
+function normalizeRoomId(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(trimmed)) return null
+  return trimmed
+}
+
 export function createSocketIoOptions(serverConfig, {
   hostGraceMs,
   maxHttpBufferSize,
@@ -69,6 +76,7 @@ function disabledEnv(value) {
 function closeHttpServer(httpServer) {
   return new Promise(resolve => {
     if (!httpServer.listening) return resolve()
+    if (typeof httpServer.closeAllConnections === 'function') httpServer.closeAllConnections()
     httpServer.close(() => resolve())
   })
 }
@@ -99,7 +107,7 @@ export async function startSignalingServer(options = {}) {
   const hostReadyFallbackMs = numericOption(optionOrDefault(options, 'hostReadyFallbackMs', env.HOST_READY_FALLBACK_MS), 30 * 1000)
   const authRateLimitMaxAttempts = integerOption(optionOrDefault(options, 'authRateLimitMaxAttempts', env.AUTH_RATE_LIMIT_MAX_ATTEMPTS), 20, { min: 1 })
   const authRateLimitWindowMs = numericOption(optionOrDefault(options, 'authRateLimitWindowMs', env.AUTH_RATE_LIMIT_WINDOW_MS), 60 * 1000, { min: 1 })
-  const maxHttpBufferSize = integerOption(optionOrDefault(options, 'maxHttpBufferSize', env.SOCKET_MAX_HTTP_BUFFER_SIZE), 12 * 1024 * 1024, { min: 1024 * 1024 })
+  const maxHttpBufferSize = integerOption(optionOrDefault(options, 'maxHttpBufferSize', env.SOCKET_MAX_HTTP_BUFFER_SIZE), 16 * 1024 * 1024, { min: 1024 * 1024 })
   const socketPingIntervalMs = numericOption(optionOrDefault(options, 'socketPingIntervalMs', env.SOCKET_PING_INTERVAL_MS), 30 * 1000, { min: 1000 })
   const socketPingTimeoutMs = numericOption(optionOrDefault(options, 'socketPingTimeoutMs', env.SOCKET_PING_TIMEOUT_MS), 60 * 1000, { min: 1000 })
   const connectionStateRecovery = booleanEnv(optionOrDefault(options, 'connectionStateRecovery', env.SOCKET_CONNECTION_STATE_RECOVERY), false) &&
@@ -248,13 +256,25 @@ export async function startSignalingServer(options = {}) {
     }))
   }
 
+  function publicTorrent(torrent) {
+    if (!torrent) return null
+    const safe = {
+      kind: torrent.kind,
+      name: torrent.name,
+      selectedFileIndex: torrent.selectedFileIndex,
+      version: torrent.version
+    }
+    if (torrent.magnetURI) safe.magnetURI = torrent.magnetURI
+    return safe
+  }
+
   function snapshot(room, clientId) {
     return {
       roomId: room.id,
       hostClientId: room.hostClientId,
       isHost: room.hostClientId === clientId,
       members: publicMembers(room),
-      torrent: room.torrent,
+      torrent: publicTorrent(room.torrent),
       state: room.state,
       serverTime: now()
     }
@@ -343,7 +363,11 @@ export async function startSignalingServer(options = {}) {
         return
       }
 
-      const safeRoomId = String(roomId).slice(0, 80)
+      const safeRoomId = normalizeRoomId(roomId)
+      if (!safeRoomId) {
+        ack?.({ ok: false, error: 'roomId must be 1-64 characters and contain only letters, numbers, underscores, or hyphens' })
+        return
+      }
       const safeName = String(name || 'Anonymous').slice(0, 40)
       let room
       try {

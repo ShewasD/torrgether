@@ -3,6 +3,7 @@ import { applyTranslations, normalizeLocale, resolveInitialLocale, translate } f
 
 const $ = id => document.getElementById(id)
 const RUTRACKER_BOUNDS_MIN_SIZE = 24
+const EMBEDDED_VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.ogv', '.ogg', '.mov'])
 
 const els = {
   languageSelect: $('languageSelect'),
@@ -17,6 +18,8 @@ const els = {
   sourceCount: $('sourceCount'),
   languageNotice: $('languageNotice'),
   themeToggleBtn: $('themeToggleBtn'),
+  playerPreview: document.querySelector('.player-preview'),
+  embeddedPlayer: $('embeddedPlayer'),
   detailBackdrop: $('detailBackdrop'),
   detailTitle: $('detailTitle'),
   detailMeta: $('detailMeta'),
@@ -101,16 +104,20 @@ const state = {
   mpvAvailable: false,
   mpvDetails: null,
   mpvActive: false,
+  embeddedActive: false,
   externalStatus: null,
   externalStatusRequest: null,
   launchInFlight: false,
   lastHostBroadcast: { playing: false, time: 0, at: 0 },
   lastExternalPoll: null,
+  lastAppliedPlayback: null,
+  serverTimeOffset: 0,
   heartbeatInFlight: false,
   torrentStatusInFlight: false,
   externalStatusIntervalInFlight: false,
   connectionStatus: { key: 'status.offline', params: {}, kind: 'danger' },
   sourceTab: 'catalog',
+  workspaceTab: 'watch',
   rutrackerVisible: false,
   rutrackerBoundsRequest: null,
   contentLanguage: localStorage.getItem('torrgether.contentLanguage') || 'any',
@@ -129,6 +136,7 @@ const rendererLogLines = []
 let rendererLogFlush = null
 let sourceSearchGeneration = 0
 let sourceSearchTimer = null
+let suppressEmbeddedEvents = false
 
 function registerInterval(callback, ms) {
   const id = setInterval(callback, ms)
@@ -295,7 +303,12 @@ function isMpvConnected() {
   return Boolean(state.externalStatus?.connected)
 }
 
+function isEmbeddedConnected() {
+  return Boolean(state.embeddedActive && els.embeddedPlayer?.src)
+}
+
 function clearCurrentTorrentState() {
+  stopEmbeddedPlayer()
   state.currentTorrent = null
   state.torrentPayloadKey = null
   state.mpvActive = false
@@ -308,15 +321,16 @@ function clearCurrentTorrentState() {
 function updateActionState() {
   const hasTorrent = Boolean(state.currentTorrent)
   const hasMpv = state.mpvAvailable
-  if (els.chooseTorrentBtn) els.chooseTorrentBtn.disabled = !state.isHost || !hasMpv
-  if (els.setMagnetBtn) els.setMagnetBtn.disabled = !state.isHost || !hasMpv
+  const hasEmbeddedFallback = hasTorrent && canUseEmbeddedPlayer()
+  if (els.chooseTorrentBtn) els.chooseTorrentBtn.disabled = !state.isHost
+  if (els.setMagnetBtn) els.setMagnetBtn.disabled = !state.isHost
   if (els.fileSelect) els.fileSelect.disabled = !state.isHost || !hasTorrent
-  if (els.openMpvBtn) els.openMpvBtn.disabled = !hasTorrent || !hasMpv || state.launchInFlight
-  if (els.mpvToggleBtn) els.mpvToggleBtn.disabled = !isMpvConnected()
-  if (els.mpvBackBtn) els.mpvBackBtn.disabled = !isMpvConnected()
-  if (els.mpvForwardBtn) els.mpvForwardBtn.disabled = !isMpvConnected()
-  if (els.mpvStopBtn) els.mpvStopBtn.disabled = !state.mpvActive && !state.externalStatus?.running
-  if (els.detailImportBtn) els.detailImportBtn.disabled = !state.isHost || !state.selectedSourceResult || !isPlayableResult(state.selectedSourceResult) || !hasMpv
+  if (els.openMpvBtn) els.openMpvBtn.disabled = !hasTorrent || (!hasMpv && !hasEmbeddedFallback) || state.launchInFlight
+  if (els.mpvToggleBtn) els.mpvToggleBtn.disabled = !isMpvConnected() && !isEmbeddedConnected()
+  if (els.mpvBackBtn) els.mpvBackBtn.disabled = !isMpvConnected() && !isEmbeddedConnected()
+  if (els.mpvForwardBtn) els.mpvForwardBtn.disabled = !isMpvConnected() && !isEmbeddedConnected()
+  if (els.mpvStopBtn) els.mpvStopBtn.disabled = !state.mpvActive && !state.externalStatus?.running && !state.embeddedActive
+  if (els.detailImportBtn) els.detailImportBtn.disabled = !state.isHost || !state.selectedSourceResult || !isPlayableResult(state.selectedSourceResult)
   for (const button of busyButtons) button.disabled = true
 }
 
@@ -379,8 +393,9 @@ async function torrentKey(payload) {
 
 function expectedRoomTime(roomState) {
   if (!roomState) return 0
+  const now = Date.now() + (state.serverTimeOffset || 0)
   if (!roomState.playing) return Number(roomState.time) || 0
-  return (Number(roomState.time) || 0) + Math.max(0, Date.now() - roomState.updatedAt) / 1000
+  return (Number(roomState.time) || 0) + Math.max(0, now - roomState.updatedAt) / 1000
 }
 
 function renderFileOptions(torrent) {
@@ -406,6 +421,86 @@ function updateVideoInfo() {
   els.videoTitle.textContent = title
   els.mkvHint.textContent = t('player.selectedHint', { name: state.currentTorrent.selectedFileName || title })
   updateActionState()
+}
+
+function canUseEmbeddedPlayer(torrent = state.currentTorrent) {
+  if (!torrent?.streamURL) return false
+  const ext = String(torrent.selectedFileExt || '').toLowerCase()
+  return !ext || EMBEDDED_VIDEO_EXTENSIONS.has(ext)
+}
+
+function stopEmbeddedPlayer() {
+  const player = els.embeddedPlayer
+  if (!player) return
+  suppressEmbeddedEvents = true
+  try {
+    player.pause()
+    player.removeAttribute('src')
+    player.load()
+  } finally {
+    suppressEmbeddedEvents = false
+  }
+  state.embeddedActive = false
+  els.playerPreview?.classList.remove('embedded-active')
+  player.classList.add('hidden')
+}
+
+async function startEmbeddedPlayer({ playing = false, time = 0, reason = 'fallback', announce = true } = {}) {
+  const player = els.embeddedPlayer
+  if (!player || !state.currentTorrent?.streamURL) return false
+  if (!canUseEmbeddedPlayer()) {
+    if (announce) log(`Embedded player cannot play ${state.currentTorrent.selectedFileExt || 'this file type'}; install or repair MPV.`)
+    return false
+  }
+
+  if (player.src !== state.currentTorrent.streamURL) {
+    player.src = state.currentTorrent.streamURL
+  }
+  player.classList.remove('hidden')
+  els.playerPreview?.classList.add('embedded-active')
+  state.embeddedActive = true
+  state.mpvActive = false
+
+  const target = Math.max(0, Number(time) || 0)
+  if (Number.isFinite(target) && Math.abs((Number(player.currentTime) || 0) - target) > 0.75) {
+    try { player.currentTime = target } catch {}
+  }
+
+  if (playing) {
+    try {
+      await player.play()
+    } catch (err) {
+      if (announce) log(`Embedded player is ready, but autoplay was blocked: ${err.message || err}`)
+    }
+  } else {
+    player.pause()
+  }
+
+  if (els.mpvStatus) els.mpvStatus.textContent = 'embedded player'
+  if (announce) log(`Started embedded player (${reason}).`)
+  updateActionState()
+  return true
+}
+
+async function controlEmbeddedPlayer({ playing, time, hard = false, seek = false } = {}) {
+  if (!isEmbeddedConnected()) throw new Error('Embedded player is not running')
+  const player = els.embeddedPlayer
+  const hasTime = Number.isFinite(Number(time))
+  if (hasTime && (hard || seek)) {
+    try { player.currentTime = Math.max(0, Number(time)) } catch {}
+  }
+  if (typeof playing === 'boolean') {
+    if (playing) await player.play()
+    else player.pause()
+  }
+  return {
+    connected: true,
+    running: true,
+    pause: player.paused,
+    timePos: Number(player.currentTime) || 0,
+    duration: Number.isFinite(Number(player.duration)) ? Number(player.duration) : null,
+    filename: state.currentTorrent?.selectedFileName || null
+  }
 }
 
 function formatBytes(bytes) {
@@ -643,25 +738,50 @@ async function getActivePlayback() {
     }
   }
 
+  if (isEmbeddedConnected()) {
+    return {
+      playing: !els.embeddedPlayer.paused,
+      time: Number(els.embeddedPlayer.currentTime) || 0
+    }
+  }
+
   return {
     playing: false,
     time: expectedRoomTime(state.roomPlaybackState)
   }
 }
 
-async function applyPlayback(roomState, hard = false) {
+async function applyPlayback(roomState) {
   if (!state.currentTorrent) return
   if (!roomState || roomState.seq < state.lastRemoteSeq) return
+  if (state.lastAppliedPlayback && state.lastAppliedPlayback.seq === roomState.seq) return
 
   state.roomPlaybackState = roomState
   state.lastRemoteSeq = roomState.seq
   els.seqStatus.textContent = String(roomState.seq)
   els.timeStatus.textContent = expectedRoomTime(roomState).toFixed(1)
 
-  if (!isMpvConnected()) return
-
   const target = expectedRoomTime(roomState)
   const driftThreshold = roomState.reason === 'heartbeat' ? 2.0 : 0.75
+
+  if (!isMpvConnected()) {
+    if (isEmbeddedConnected() || canUseEmbeddedPlayer()) {
+      state.suppressHostPoll = true
+      try {
+        await startEmbeddedPlayer({
+          playing: Boolean(roomState.playing),
+          time: target,
+          reason: 'room sync',
+          announce: false
+        })
+      } finally {
+        state.suppressHostPoll = false
+      }
+    }
+    state.lastAppliedPlayback = { seq: roomState.seq, time: target, playing: Boolean(roomState.playing) }
+    return
+  }
+
   const statusResult = await pollExternalPlayerStatus()
   const localTime = statusResult.ok ? Number(statusResult.status.timePos) || 0 : 0
   const drift = Math.abs(localTime - target)
@@ -671,12 +791,13 @@ async function applyPlayback(roomState, hard = false) {
     const result = await window.torrgether.controlExternalPlayer({
       playing: Boolean(roomState.playing),
       time: target,
-      hard: hard || drift > driftThreshold
+      hard: drift > driftThreshold
     })
     if (result.ok) state.externalStatus = result.status
   } finally {
     state.suppressHostPoll = false
   }
+  state.lastAppliedPlayback = { seq: roomState.seq, time: target, playing: Boolean(roomState.playing) }
 }
 
 async function reportTorrentReady(torrentPayload, torrentResult) {
@@ -706,7 +827,14 @@ async function launchMpv(reason = 'manual') {
 
   if (!state.mpvAvailable) {
     const mpv = await refreshMpvPreflight({ announce: true })
-    if (!mpv?.ok) return
+    if (!mpv?.ok) {
+      await startEmbeddedPlayer({
+        playing: Boolean(state.roomPlaybackState?.playing),
+        time: expectedRoomTime(state.roomPlaybackState),
+        reason: 'MPV unavailable'
+      })
+      return
+    }
   }
 
   state.launchInFlight = true
@@ -719,10 +847,16 @@ async function launchMpv(reason = 'manual') {
       state.mpvActive = false
       logT('log.mpvDidNotStart', { error: result.error })
       await refreshMpvLogs()
+      await startEmbeddedPlayer({
+        playing,
+        time: target,
+        reason: 'MPV launch failed'
+      })
       return
     }
 
     state.mpvActive = true
+    stopEmbeddedPlayer()
     state.externalStatus = result.status
     state.lastExternalPoll = null
     renderMpvLogs({ logPath: result.status?.logPath, lines: result.status?.recentLogs })
@@ -751,6 +885,7 @@ async function loadTorrentFromRoom(torrentPayload) {
   state.torrentPayloadKey = key
   state.mpvActive = false
   state.lastExternalPoll = null
+  stopEmbeddedPlayer()
   state.currentTorrent = null
   updateVideoInfo()
   logT('log.loadingTorrent', { name: torrentPayload.name || torrentPayload.kind })
@@ -778,6 +913,9 @@ async function loadTorrentFromRoom(torrentPayload) {
 }
 
 async function applySnapshot(snapshot) {
+  if (typeof snapshot.serverTime === 'number' && Number.isFinite(snapshot.serverTime)) {
+    state.serverTimeOffset = snapshot.serverTime - Date.now()
+  }
   state.isHost = Boolean(snapshot.isHost)
   state.roomPlaybackState = snapshot.state || state.roomPlaybackState
   renderRole()
@@ -786,7 +924,7 @@ async function applySnapshot(snapshot) {
   renderMembers(snapshot.members || [])
   if (snapshot.torrent) await loadTorrentFromRoom(snapshot.torrent)
   else clearCurrentTorrentState()
-  await applyPlayback(snapshot.state, true)
+  await applyPlayback(snapshot.state)
 }
 
 function renderMembers(members) {
@@ -804,6 +942,10 @@ function renderMembers(members) {
 
 async function joinRoom() {
   state.roomId = els.roomId.value.trim() || 'demo-room'
+  if (state.joined && window.torrgether.socketConnected()) {
+    logT('log.alreadyJoined', { room: state.roomId })
+    return
+  }
   let url
   try {
     url = normalizeServerUrl(els.serverUrl.value)
@@ -867,13 +1009,10 @@ async function joinRoom() {
 
 async function hostSetTorrentPayload(payload) {
   if (!state.isHost) return logT('log.hostOnly')
-  if (!state.mpvAvailable) {
-    await refreshMpvPreflight({ announce: true })
-    if (!state.mpvAvailable) return
-  }
 
   state.mpvActive = false
   state.lastExternalPoll = null
+  stopEmbeddedPlayer()
   state.currentTorrent = null
   updateVideoInfo()
 
@@ -936,6 +1075,12 @@ async function emitHostControl(reason, override = {}) {
 }
 
 async function controlMpvRelative(delta) {
+  if (!isMpvConnected() && isEmbeddedConnected()) {
+    const nextTime = Math.max(0, (Number(els.embeddedPlayer.currentTime) || 0) + delta)
+    await controlEmbeddedPlayer({ time: nextTime, seek: true })
+    if (state.isHost) await emitHostControl('embedded:seek', { playing: !els.embeddedPlayer.paused, time: nextTime })
+    return
+  }
   if (!isMpvConnected()) return logT('log.mpvNotRunning')
   const statusResult = await pollExternalPlayerStatus()
   if (!statusResult.ok) return log(statusResult.error)
@@ -951,6 +1096,15 @@ async function controlMpvRelative(delta) {
 }
 
 async function toggleMpv() {
+  if (!isMpvConnected() && isEmbeddedConnected()) {
+    const nextPlaying = els.embeddedPlayer.paused
+    await controlEmbeddedPlayer({ playing: nextPlaying })
+    if (state.isHost) await emitHostControl(nextPlaying ? 'embedded:play' : 'embedded:pause', {
+      playing: nextPlaying,
+      time: Number(els.embeddedPlayer.currentTime) || 0
+    })
+    return
+  }
   if (!isMpvConnected()) return logT('log.mpvNotRunning')
   const statusResult = await pollExternalPlayerStatus()
   if (!statusResult.ok) return log(statusResult.error)
@@ -976,6 +1130,17 @@ function updateSourceTabs() {
   els.rutrackerPanel?.classList.toggle('hidden', !showRutracker)
   if (showRutracker && state.rutrackerVisible) scheduleRutrackerBoundsUpdate()
   if (!showRutracker && els.rutrackerPanel) hideRutrackerView()
+}
+
+function switchWorkspace(tab) {
+  state.workspaceTab = tab === 'room' ? 'room' : tab === 'settings' ? 'settings' : 'watch'
+  document.getElementById('watchWorkspace')?.classList.toggle('hidden', state.workspaceTab !== 'watch')
+  document.getElementById('roomWorkspace')?.classList.toggle('hidden', state.workspaceTab !== 'room')
+  document.getElementById('settingsWorkspace')?.classList.toggle('hidden', state.workspaceTab !== 'settings')
+  document.querySelectorAll('.nav-item').forEach((el, index) => {
+    const tabs = ['watch', 'room', 'settings']
+    el.classList.toggle('active', tabs[index] === state.workspaceTab)
+  })
 }
 
 function setSourceTab(tab) {
@@ -1039,11 +1204,15 @@ document.querySelectorAll('[data-i18n-value]').forEach(el => {
   el.addEventListener('input', () => { el.dataset.userEdited = 'true' })
 })
 
-els.joinBtn.addEventListener('click', joinRoom)
+els.joinBtn?.addEventListener('click', joinRoom)
 els.catalogSourceTab?.addEventListener('click', () => setSourceTab('catalog'))
 els.manualSourceTab?.addEventListener('click', () => setSourceTab('manual'))
 els.rutrackerSourceTab?.addEventListener('click', () => showRutrackerView())
 els.themeToggleBtn?.addEventListener('click', () => applyTheme(state.theme === 'dark' ? 'light' : 'dark'))
+document.querySelectorAll('.nav-item').forEach((el, index) => {
+  const tabs = ['watch', 'room', 'settings']
+  el.addEventListener('click', () => switchWorkspace(tabs[index]))
+})
 document.querySelectorAll('[data-media-filter]').forEach(button => {
   button.classList.toggle('active', button.dataset.mediaFilter === state.mediaType)
   button.addEventListener('click', () => setMediaType(button.dataset.mediaFilter))
@@ -1075,13 +1244,13 @@ els.updateActionBtn?.addEventListener('click', () => {
   if (state.updateReleaseUrl) window.torrgether.openReleasePage(state.updateReleaseUrl)
 })
 els.updateDismissBtn?.addEventListener('click', () => els.updateBanner?.classList.add('hidden'))
-els.rutrackerOpenBtn.addEventListener('click', showRutrackerView)
-els.rutrackerCloseBtn.addEventListener('click', hideRutrackerView)
-els.rutrackerBackBtn.addEventListener('click', () => window.torrgether.rutrackerBack())
-els.rutrackerForwardBtn.addEventListener('click', () => window.torrgether.rutrackerForward())
-els.rutrackerReloadBtn.addEventListener('click', () => window.torrgether.rutrackerReload())
+els.rutrackerOpenBtn?.addEventListener('click', showRutrackerView)
+els.rutrackerCloseBtn?.addEventListener('click', hideRutrackerView)
+els.rutrackerBackBtn?.addEventListener('click', () => window.torrgether.rutrackerBack())
+els.rutrackerForwardBtn?.addEventListener('click', () => window.torrgether.rutrackerForward())
+els.rutrackerReloadBtn?.addEventListener('click', () => window.torrgether.rutrackerReload())
 
-els.chooseTorrentBtn.addEventListener('click', async () => {
+els.chooseTorrentBtn?.addEventListener('click', async () => {
   await withButtonBusy(els.chooseTorrentBtn, 'buttons.choosing', async () => {
     let result
     try {
@@ -1095,7 +1264,7 @@ els.chooseTorrentBtn.addEventListener('click', async () => {
   })
 })
 
-els.setMagnetBtn.addEventListener('click', async () => {
+els.setMagnetBtn?.addEventListener('click', async () => {
   await withButtonBusy(els.setMagnetBtn, 'buttons.loading', async () => {
     const magnetURI = els.magnetInput.value.trim()
     if (!isValidMagnetURI(magnetURI)) return logT('log.validMagnet')
@@ -1103,45 +1272,49 @@ els.setMagnetBtn.addEventListener('click', async () => {
   })
 })
 
-els.fileSelect.addEventListener('change', async () => {
+els.fileSelect?.addEventListener('change', async () => {
   if (!state.isHost) return
   els.fileSelect.disabled = true
-  state.mpvActive = false
-  state.lastExternalPoll = null
-  const selectedFileIndex = Number(els.fileSelect.value)
-  if (!Number.isInteger(selectedFileIndex) || selectedFileIndex < 0) {
-    logT('log.invalidFileIndex')
-    updateActionState()
-    return
-  }
+  try {
+    state.mpvActive = false
+    state.lastExternalPoll = null
+    stopEmbeddedPlayer()
+    const selectedFileIndex = Number(els.fileSelect.value)
+    if (!Number.isInteger(selectedFileIndex) || selectedFileIndex < 0) {
+      logT('log.invalidFileIndex')
+      updateActionState()
+      return
+    }
 
-  const local = await window.torrgether.selectTorrentFile(selectedFileIndex)
-  if (!local.ok) {
-    log(local.error)
-    updateActionState()
-    return
-  }
-  state.currentTorrent = {
-    ...state.currentTorrent,
-    selectedFileIndex,
-    selectedFileName: local.selectedFileName,
-    selectedFileExt: local.selectedFileExt,
-    streamURL: local.streamURL
-  }
-  updateVideoInfo()
+    const local = await window.torrgether.selectTorrentFile(selectedFileIndex)
+    if (!local.ok) {
+      log(local.error)
+      updateActionState()
+      return
+    }
+    state.currentTorrent = {
+      ...state.currentTorrent,
+      selectedFileIndex,
+      selectedFileName: local.selectedFileName,
+      selectedFileExt: local.selectedFileExt,
+      streamURL: local.streamURL
+    }
+    updateVideoInfo()
 
-  const ack = await window.torrgether.socketEmitAck('torrent:file-selected', { selectedFileIndex })
-  if (!ack.ok) return log(ack.error)
-  if (ack.torrentVersion) {
-    state.roomPlaybackState = { seq: state.lastRemoteSeq + 1, playing: false, time: 0, updatedAt: Date.now(), reason: 'torrent:file-selected' }
-    await window.torrgether.socketEmitAck('torrent:ready', {
-      version: ack.torrentVersion,
-      infoHash: state.currentTorrent.infoHash,
-      selectedFileIndex
-    })
+    const ack = await window.torrgether.socketEmitAck('torrent:file-selected', { selectedFileIndex })
+    if (!ack.ok) return log(ack.error)
+    if (ack.torrentVersion) {
+      state.roomPlaybackState = { seq: state.lastRemoteSeq + 1, playing: false, time: 0, updatedAt: Date.now(), reason: 'torrent:file-selected' }
+      await window.torrgether.socketEmitAck('torrent:ready', {
+        version: ack.torrentVersion,
+        infoHash: state.currentTorrent.infoHash,
+        selectedFileIndex
+      })
+    }
+    await autoLaunchMpv('file selected')
+  } finally {
+    updateActionState()
   }
-  await autoLaunchMpv('file selected')
-  updateActionState()
 })
 
 els.openMpvBtn.addEventListener('click', () => withButtonBusy(els.openMpvBtn, 'buttons.opening', () => launchMpv('manual restart')))
@@ -1157,11 +1330,41 @@ els.openLogsFolderBtn?.addEventListener('click', async () => {
 els.mpvStopBtn.addEventListener('click', async () => {
   await withButtonBusy(els.mpvStopBtn, 'buttons.stopping', async () => {
     await window.torrgether.stopExternalPlayer()
+    stopEmbeddedPlayer()
     state.mpvActive = false
     state.lastExternalPoll = null
     state.externalStatus = null
     els.mpvStatus.textContent = t('mpv.stopped')
   })
+})
+
+els.embeddedPlayer?.addEventListener('play', () => {
+  state.embeddedActive = true
+  if (els.mpvStatus) els.mpvStatus.textContent = 'embedded player'
+  updateActionState()
+  if (state.isHost && !suppressEmbeddedEvents && !state.suppressHostPoll) {
+    emitHostControl('embedded:play', { playing: true, time: Number(els.embeddedPlayer.currentTime) || 0 }).catch(err => log(err.message || err))
+  }
+})
+els.embeddedPlayer?.addEventListener('pause', () => {
+  if (els.mpvStatus && state.embeddedActive) els.mpvStatus.textContent = 'embedded paused'
+  updateActionState()
+  if (state.isHost && !suppressEmbeddedEvents && !state.suppressHostPoll && state.embeddedActive) {
+    emitHostControl('embedded:pause', { playing: false, time: Number(els.embeddedPlayer.currentTime) || 0 }).catch(err => log(err.message || err))
+  }
+})
+els.embeddedPlayer?.addEventListener('seeked', () => {
+  if (state.isHost && !suppressEmbeddedEvents && !state.suppressHostPoll && state.embeddedActive) {
+    emitHostControl('embedded:seek', { playing: !els.embeddedPlayer.paused, time: Number(els.embeddedPlayer.currentTime) || 0 }).catch(err => log(err.message || err))
+  }
+})
+els.embeddedPlayer?.addEventListener('ended', () => {
+  state.embeddedActive = false
+  updateActionState()
+})
+els.embeddedPlayer?.addEventListener('error', () => {
+  const error = els.embeddedPlayer.error
+  log(`Embedded player failed${error?.code ? ` (code ${error.code})` : ''}; try MPV for this file.`)
 })
 
 window.addEventListener('resize', scheduleRutrackerBoundsUpdate)
@@ -1238,6 +1441,13 @@ registerInterval(async () => {
 }, 1000)
 
 registerInterval(async () => {
+  if (state.embeddedActive && !state.mpvActive && !state.externalStatus?.running && !state.externalStatus?.connected) {
+    const time = Number(els.embeddedPlayer?.currentTime) || 0
+    els.mpvStatus.textContent = els.embeddedPlayer?.paused ? 'embedded paused' : `embedded playing, ${time.toFixed(1)}s`
+    els.timeStatus.textContent = time.toFixed(1)
+    updateActionState()
+    return
+  }
   if (!state.mpvActive && !state.externalStatus?.running && !state.externalStatus?.connected) return
   if (state.externalStatusIntervalInFlight) return
   state.externalStatusIntervalInFlight = true

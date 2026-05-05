@@ -64,8 +64,9 @@ let rutrackerSession = null
 let rutrackerVisible = false
 let rutrackerBounds = null
 let sourceResultCache = new Map()
+let torrentLoadInProgress = false
 
-const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.avi', '.ogv'])
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.avi', '.ogv', '.flv', '.wmv', '.ts', '.3gp', '.m2ts'])
 const MAX_TORRENT_FILE_BYTES = Number(process.env.MAX_TORRENT_FILE_BYTES || 10 * 1024 * 1024)
 const MAX_MAGNET_URI_LENGTH = Number(process.env.MAX_MAGNET_URI_LENGTH || 2048)
 const FETCH_TORRENT_TIMEOUT_MS = Number(process.env.FETCH_TORRENT_TIMEOUT_MS || 30_000)
@@ -96,7 +97,7 @@ const MPV_IPC_RETRY_MS = Number(process.env.MPV_IPC_RETRY_MS || 100)
 const MPV_SHUTDOWN_GRACE_MS = Number(process.env.MPV_SHUTDOWN_GRACE_MS || 1500)
 const MPV_SHUTDOWN_KILL_AFTER_MS = Number(process.env.MPV_SHUTDOWN_KILL_AFTER_MS || 2000)
 const MPV_VERBOSE_LOGS = ['1', 'true', 'yes'].includes(String(process.env.MPV_VERBOSE_LOGS || '').toLowerCase())
-const MPV_FULLSCREEN = !['0', 'false', 'no'].includes(String(process.env.MPV_FULLSCREEN ?? '1').toLowerCase())
+const MPV_FULLSCREEN = ['1', 'true', 'yes'].includes(String(process.env.MPV_FULLSCREEN || '').toLowerCase())
 const MPV_PLAYBACK_HEAD_SYNC_MS = Number(process.env.MPV_PLAYBACK_HEAD_SYNC_MS || 3000)
 const PLAYER_LOG_MAX_LINES = 400
 const HEALTH_SNAPSHOT_INTERVAL_MS = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 60_000)
@@ -409,7 +410,11 @@ function ensurePlaybackHeadSyncTimer() {
   playbackHeadSyncTimer.unref?.()
 }
 
-function createClient() {
+async function createClient() {
+  if (client) {
+    appLogger.warn('createClient called while a WebTorrent client already exists; destroying the old one first')
+    await destroyWebTorrentClient()
+  }
   client = new WebTorrent({ maxConns: WEBTORRENT_MAX_CONNS })
   client.on('error', err => {
     appLogger.error('WebTorrent client error', err)
@@ -642,7 +647,12 @@ function handleRutrackerNavigation(url) {
 
   if (isRutrackerTopLevelUrl(url)) return { allow: true }
 
-  shell.openExternal(url).catch(err => appLogger.warn('Failed to open external URL from RuTracker view', { url, message: err.message }))
+  const safeUrl = toSafeUrl(url)
+  if (safeUrl && (safeUrl.protocol === 'https:' || safeUrl.protocol === 'http:')) {
+    shell.openExternal(safeUrl.href).catch(err => appLogger.warn('Failed to open external URL from RuTracker view', { url: safeUrl.href, message: err.message }))
+  } else {
+    appLogger.warn('Blocked non-HTTP external URL from RuTracker view', { url })
+  }
   return { allow: false }
 }
 
@@ -665,7 +675,7 @@ function handleRutrackerDownload(event, item) {
   }
 
   const importName = importNameForTorrent({ filename, url })
-  queueMicrotask(async () => {
+  Promise.resolve().then(async () => {
     try {
       const buffer = await fetchTorrentToMemory(url)
       sendRutrackerImport({
@@ -679,6 +689,9 @@ function handleRutrackerDownload(event, item) {
     } catch (err) {
       sendToRenderer('torrent:error', { message: `Could not import RuTracker torrent: ${err.message}` })
     }
+  }).catch(err => {
+    appLogger.warn('Unexpected RuTracker import error', { url, message: err.message })
+    sendToRenderer('torrent:error', { message: `Could not import RuTracker torrent: ${err.message}` })
   })
 }
 
@@ -810,7 +823,7 @@ function createWindow() {
       nodeIntegrationInSubFrames: false,
       webSecurity: true,
       allowRunningInsecureContent: false,
-      sandbox: false
+      sandbox: true
     }
   })
 
@@ -935,8 +948,11 @@ async function clearCurrentTorrent() {
 }
 
 async function loadTorrent(payload, preferredFileIndex = null) {
-  await waitForStreamServer()
-  await clearCurrentTorrent()
+  if (torrentLoadInProgress) throw new Error('Another torrent load is already in progress')
+  torrentLoadInProgress = true
+  try {
+    await waitForStreamServer()
+    await clearCurrentTorrent()
 
   const torrentId = torrentIdFromPayload(payload)
 
@@ -1038,6 +1054,9 @@ async function loadTorrent(payload, preferredFileIndex = null) {
       resolve(result)
     })
   })
+  } finally {
+    torrentLoadInProgress = false
+  }
 }
 
 function makeMpvIpcPath() {
@@ -1059,7 +1078,8 @@ function resetExternalStatus(lastError = null) {
     cacheSeconds: null,
     cacheBytes: null,
     cacheText: null,
-    lowCacheEvents: 0
+    lowCacheEvents: 0,
+    lastLowCacheAt: 0
   }
 }
 
@@ -1069,7 +1089,13 @@ function updateMpvCacheFromStdout(text) {
     externalPlayer.status.cacheSeconds = parsed.cacheSeconds
     externalPlayer.status.cacheBytes = parsed.cacheBytes
     externalPlayer.status.cacheText = parsed.cacheText
-    if (Number.isFinite(parsed.cacheSeconds) && parsed.cacheSeconds < 0.5) externalPlayer.status.lowCacheEvents += 1
+    if (Number.isFinite(parsed.cacheSeconds) && parsed.cacheSeconds < 0.5) {
+      const now = Date.now()
+      if (!externalPlayer.status.lastLowCacheAt || now - externalPlayer.status.lastLowCacheAt >= 5000) {
+        externalPlayer.status.lowCacheEvents += 1
+        externalPlayer.status.lastLowCacheAt = now
+      }
+    }
   }
   if (Number.isFinite(parsed.timePos)) {
     // JSON IPC time-pos is preferred, but stdout gives a useful fallback when
@@ -1305,32 +1331,6 @@ function waitForProcessExit(child, timeoutMs) {
   })
 }
 
-function buildMpvEnv(env = process.env) {
-  const keep = [
-    'PATH',
-    'Path',
-    'SystemRoot',
-    'WINDIR',
-    'TEMP',
-    'TMP',
-    'HOME',
-    'USERPROFILE',
-    'APPDATA',
-    'LOCALAPPDATA',
-    'DISPLAY',
-    'WAYLAND_DISPLAY',
-    'XDG_RUNTIME_DIR',
-    'XDG_SESSION_TYPE',
-    'LANG',
-    'LC_ALL'
-  ]
-  const result = {}
-  for (const key of keep) {
-    if (env[key] != null) result[key] = env[key]
-  }
-  return result
-}
-
 async function forceKillProcess(child) {
   if (!child?.pid) return
   try {
@@ -1417,7 +1417,7 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
     externalPlayer.process = spawn(mpvBinary, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: false,
-      env: buildMpvEnv()
+      env: process.env
     })
   } catch (err) {
     resetExternalStatus(err.message)
@@ -1862,7 +1862,7 @@ app.whenReady().then(async () => {
     mpvLogPath: mpvLogger.filePath
   })
   try {
-    createClient()
+    await createClient()
   } catch (err) {
     appLogger.error('Failed to initialize WebTorrent client', { error: err, health: getRuntimeHealthSnapshot() })
     dialog.showErrorBox('Torrgether streaming failed to start', err?.message || String(err))
@@ -1891,21 +1891,20 @@ app.on('will-quit', () => {
   appLogger.info('Desktop app will quit', getRuntimeHealthSnapshot())
 })
 
-app.on('before-quit', event => {
+app.on('before-quit', async event => {
   appLogger.info('Desktop app before-quit', getRuntimeHealthSnapshot())
   if (shutdownStarted) return
   shutdownStarted = true
   event.preventDefault()
-  Promise.race([
-    shutdownResources(),
-    delay(SHUTDOWN_TIMEOUT_MS).then(() => {
-      appLogger.warn('Desktop app shutdown timed out; forcing exit', { timeoutMs: SHUTDOWN_TIMEOUT_MS })
-    })
-  ])
-    .catch(err => {
-      try { appLogger.error('Desktop app shutdown failed', { error: err, health: getRuntimeHealthSnapshot() }) } catch {}
-    })
-    .finally(() => {
-      app.exit(process.exitCode || 0)
-    })
+  const timeout = setTimeout(() => {
+    appLogger.warn('Desktop app shutdown timed out', { timeoutMs: SHUTDOWN_TIMEOUT_MS })
+  }, SHUTDOWN_TIMEOUT_MS)
+  try {
+    await shutdownResources()
+  } catch (err) {
+    try { appLogger.error('Desktop app shutdown failed', { error: err, health: getRuntimeHealthSnapshot() }) } catch {}
+  } finally {
+    clearTimeout(timeout)
+    app.quit()
+  }
 })

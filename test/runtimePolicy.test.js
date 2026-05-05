@@ -63,5 +63,7 @@ test('desktop runtime uses bounded RAM-only stream defaults', async () => {
   assert.equal(main.includes('--cache-backbuffer='), false)
   assert.match(main, /STREAM_RANGE_MAX_BYTES/)
   assert.match(main, /taskkill/)
+  assert.match(main, /MPV_FULLSCREEN = \['1', 'true', 'yes'\]/)
+  assert.match(main, /env: process\.env/)
   assert.equal(main.includes("'--msg-level=all=v',"), false)
 })
