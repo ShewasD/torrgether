@@ -2,7 +2,7 @@
   "name": "torrgether",
   "version": "0.3.0",
   "description": "Legal co-watching desktop app with catalog browsing, update checks, MPV control, and RAM-only torrent streaming.",
-  "author": "Torrgether contributors",
+  "author": "ShewasD <130910070+ShewasD@users.noreply.github.com>",
   "private": true,
   "type": "module",
   "main": "desktop/main.js",
@@ -16,8 +16,8 @@
     "test": "node --test",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "dist:win": "electron-builder --win nsis",
-    "dist:linux": "electron-builder --linux AppImage deb"
+    "dist:win": "electron-builder --win nsis --publish never",
+    "dist:linux": "electron-builder --linux AppImage deb --publish never"
   },
   "build": {
     "appId": "com.torrgether.app",
@@ -85,6 +85,7 @@
         }
       ],
       "category": "AudioVideo",
+      "maintainer": "ShewasD <130910070+ShewasD@users.noreply.github.com>",
       "artifactName": "${productName}-${version}.${ext}"
     },
     "deb": {
