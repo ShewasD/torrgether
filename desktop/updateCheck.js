@@ -9,7 +9,7 @@ export function parseVersion(value) {
 export function compareVersions(a, b) {
   const left = parseVersion(a)
   const right = parseVersion(b)
-  if (!left || !right) return 0
+  if (!left || !right) return null
   for (let i = 0; i < 3; i += 1) {
     if (left[i] > right[i]) return 1
     if (left[i] < right[i]) return -1
@@ -19,8 +19,21 @@ export function compareVersions(a, b) {
 
 export function normalizeUpdateRepo(value = DEFAULT_UPDATE_REPO) {
   const repo = String(value || DEFAULT_UPDATE_REPO).trim().replace(/^https:\/\/github\.com\//i, '').replace(/\/+$/, '')
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return DEFAULT_UPDATE_REPO
+  const parts = repo.split('/')
+  if (parts.length !== 2) return DEFAULT_UPDATE_REPO
+  const [owner, name] = parts
+  const ownerPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
+  const repoPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+  if (!ownerPattern.test(owner) || !repoPattern.test(name) || name.includes('..')) return DEFAULT_UPDATE_REPO
   return repo
+}
+
+function timeoutSignal(timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || typeof AbortController !== 'function') return { signal: undefined, cancel: () => {} }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  timer.unref?.()
+  return { signal: controller.signal, cancel: () => clearTimeout(timer) }
 }
 
 export function selectReleaseAssets(assets = []) {
@@ -55,7 +68,8 @@ export async function checkForUpdates({
   currentVersion,
   repo = DEFAULT_UPDATE_REPO,
   fetchImpl = globalThis.fetch,
-  platform = process.platform
+  platform = process.platform,
+  timeoutMs = Number(process.env.UPDATE_CHECK_TIMEOUT_MS || 10_000)
 } = {}) {
   if (typeof fetchImpl !== 'function') {
     return { ok: false, updateAvailable: false, error: 'fetch is not available' }
@@ -63,12 +77,19 @@ export async function checkForUpdates({
 
   const normalizedRepo = normalizeUpdateRepo(repo)
   const releaseUrl = `https://api.github.com/repos/${normalizedRepo}/releases/latest`
-  const response = await fetchImpl(releaseUrl, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'Torrgether update checker'
-    }
-  })
+  const timeout = timeoutSignal(timeoutMs)
+  let response
+  try {
+    response = await fetchImpl(releaseUrl, {
+      signal: timeout.signal,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'Torrgether update checker'
+      }
+    })
+  } finally {
+    timeout.cancel()
+  }
 
   if (response.status === 404) {
     return {
@@ -89,7 +110,18 @@ export async function checkForUpdates({
   const latestVersion = String(release.tag_name || release.name || '').replace(/^v/i, '')
   const assets = selectReleaseAssets(release.assets || [])
   const preferredAsset = assets[platformAssetKey(platform)] || null
-  const updateAvailable = compareVersions(latestVersion, currentVersion) > 0
+  const comparison = compareVersions(latestVersion, currentVersion)
+  if (comparison == null) {
+    return {
+      ok: false,
+      repo: normalizedRepo,
+      currentVersion,
+      latestVersion,
+      updateAvailable: false,
+      error: `Could not compare versions: latest=${latestVersion || 'unknown'}, current=${currentVersion || 'unknown'}`
+    }
+  }
+  const updateAvailable = comparison > 0
 
   return {
     ok: true,

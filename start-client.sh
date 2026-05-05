@@ -14,5 +14,10 @@ if [[ ! -x "node_modules/.bin/electron" ]]; then
   exit 1
 fi
 
+if [[ -z "${MPV_PATH:-}" ]] && ! command -v mpv >/dev/null 2>&1; then
+  echo "MPV was not found in PATH. Install mpv, set MPV_PATH, or run ./install.sh --install-mpv."
+  exit 1
+fi
+
 echo "Starting Torrgether Electron client"
 node_modules/.bin/electron desktop/main.js

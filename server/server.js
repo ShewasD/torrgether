@@ -32,15 +32,37 @@ export function normalizeClientId(value) {
   return trimmed
 }
 
-export function createSocketIoOptions(serverConfig, { hostGraceMs, maxHttpBufferSize } = {}) {
-  return {
+export function createSocketIoOptions(serverConfig, {
+  hostGraceMs,
+  maxHttpBufferSize,
+  pingInterval,
+  pingTimeout,
+  connectionStateRecovery = false
+} = {}) {
+  const options = {
     cors: { origin: serverConfig.corsOrigin },
     ...(maxHttpBufferSize ? { maxHttpBufferSize } : {}),
-    connectionStateRecovery: {
+    ...(pingInterval ? { pingInterval } : {}),
+    ...(pingTimeout ? { pingTimeout } : {})
+  }
+
+  if (connectionStateRecovery) {
+    options.connectionStateRecovery = {
       maxDisconnectionDuration: hostGraceMs,
       skipMiddlewares: false
     }
   }
+
+  return options
+}
+
+function booleanEnv(value, fallback = false) {
+  if (value == null || value === '') return fallback
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase())
+}
+
+function disabledEnv(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase())
 }
 
 function closeHttpServer(httpServer) {
@@ -77,6 +99,11 @@ export async function startSignalingServer(options = {}) {
   const authRateLimitMaxAttempts = integerOption(optionOrDefault(options, 'authRateLimitMaxAttempts', env.AUTH_RATE_LIMIT_MAX_ATTEMPTS), 20, { min: 1 })
   const authRateLimitWindowMs = numericOption(optionOrDefault(options, 'authRateLimitWindowMs', env.AUTH_RATE_LIMIT_WINDOW_MS), 60 * 1000, { min: 1 })
   const maxHttpBufferSize = integerOption(optionOrDefault(options, 'maxHttpBufferSize', env.SOCKET_MAX_HTTP_BUFFER_SIZE), 12 * 1024 * 1024, { min: 1024 * 1024 })
+  const socketPingIntervalMs = numericOption(optionOrDefault(options, 'socketPingIntervalMs', env.SOCKET_PING_INTERVAL_MS), 30 * 1000, { min: 1000 })
+  const socketPingTimeoutMs = numericOption(optionOrDefault(options, 'socketPingTimeoutMs', env.SOCKET_PING_TIMEOUT_MS), 60 * 1000, { min: 1000 })
+  const connectionStateRecovery = booleanEnv(optionOrDefault(options, 'connectionStateRecovery', env.SOCKET_CONNECTION_STATE_RECOVERY), false) &&
+    !disabledEnv(optionOrDefault(options, 'disableConnectionStateRecovery', env.DISABLE_CONNECTION_STATE_RECOVERY))
+  const maxRooms = integerOption(optionOrDefault(options, 'maxRooms', env.MAX_ROOMS), 5000, { min: 1 })
 
   let serverUrls = formatServerUrls(serverConfig)
   const logger = options.logger || createLogger({
@@ -88,7 +115,13 @@ export async function startSignalingServer(options = {}) {
 
   const app = express()
   const httpServer = http.createServer(app)
-  const io = new Server(httpServer, createSocketIoOptions(serverConfig, { hostGraceMs, maxHttpBufferSize }))
+  const io = new Server(httpServer, createSocketIoOptions(serverConfig, {
+    hostGraceMs,
+    maxHttpBufferSize,
+    pingInterval: socketPingIntervalMs,
+    pingTimeout: socketPingTimeoutMs,
+    connectionStateRecovery
+  }))
   const rooms = new Map()
   let maintenanceTimer = null
   let closed = false
@@ -101,6 +134,7 @@ export async function startSignalingServer(options = {}) {
     res.json({
       ok: true,
       rooms: rooms.size,
+      maxRooms,
       uptime: process.uptime(),
       publicUrl: serverUrls.publicUrl,
       tokenRequired: Boolean(serverConfig.serverToken)
@@ -137,7 +171,10 @@ export async function startSignalingServer(options = {}) {
   }
 
   function getRoom(roomId) {
-    if (!rooms.has(roomId)) rooms.set(roomId, createRoom(roomId))
+    if (!rooms.has(roomId)) {
+      if (rooms.size >= maxRooms) throw new Error(`Room limit reached (${maxRooms})`)
+      rooms.set(roomId, createRoom(roomId))
+    }
     return rooms.get(roomId)
   }
 
@@ -307,7 +344,18 @@ export async function startSignalingServer(options = {}) {
 
       const safeRoomId = String(roomId).slice(0, 80)
       const safeName = String(name || 'Anonymous').slice(0, 40)
-      const room = getRoom(safeRoomId)
+      let room
+      try {
+        room = getRoom(safeRoomId)
+      } catch (err) {
+        ack?.({ ok: false, error: err.message })
+        logger.warn('Rejected room join because room capacity is exhausted', {
+          socketId: socket.id,
+          roomId: safeRoomId,
+          maxRooms
+        })
+        return
+      }
       cancelRoomCleanup(room)
       touchRoom(room)
 

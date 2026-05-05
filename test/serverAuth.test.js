@@ -28,11 +28,24 @@ test('extracts x-server-token header', () => {
   assert.equal(tokenFromHandshake({ headers: { 'x-server-token': 'secret' } }), 'secret')
 })
 
-test('keeps Socket.IO recovery behind auth middleware', () => {
+test('keeps Socket.IO recovery disabled by default', () => {
   const options = createSocketIoOptions({ corsOrigin: '*' }, { hostGraceMs: 1234 })
+
+  assert.equal(options.connectionStateRecovery, undefined)
+})
+
+test('keeps Socket.IO recovery behind auth middleware when enabled', () => {
+  const options = createSocketIoOptions({ corsOrigin: '*' }, { hostGraceMs: 1234, connectionStateRecovery: true })
 
   assert.equal(options.connectionStateRecovery.maxDisconnectionDuration, 1234)
   assert.equal(options.connectionStateRecovery.skipMiddlewares, false)
+})
+
+test('exposes Socket.IO ping options', () => {
+  const options = createSocketIoOptions({ corsOrigin: '*' }, { pingInterval: 30000, pingTimeout: 60000 })
+
+  assert.equal(options.pingInterval, 30000)
+  assert.equal(options.pingTimeout, 60000)
 })
 
 test('validates clientId length and emptiness', () => {

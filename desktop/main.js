@@ -67,30 +67,44 @@ let sourceResultCache = new Map()
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.avi', '.ogv'])
 const MAX_TORRENT_FILE_BYTES = Number(process.env.MAX_TORRENT_FILE_BYTES || 10 * 1024 * 1024)
+const FETCH_TORRENT_TIMEOUT_MS = Number(process.env.FETCH_TORRENT_TIMEOUT_MS || 30_000)
 const MAX_MEMORY_CHUNKS = Number(process.env.MAX_MEMORY_CHUNKS || 384)
 const MAX_MEMORY_MB = Number(process.env.MAX_MEMORY_MB || 512)
-const MAX_MEMORY_BYTES = Number(process.env.MAX_MEMORY_BYTES || MAX_MEMORY_MB * 1024 * 1024)
-const DEFAULT_MPV_DEMUXER_MAX_BYTES = `${Math.max(32, Math.min(256, Math.floor(MAX_MEMORY_MB / 2)))}MiB`
-const MPV_DEMUXER_MAX_BYTES = process.env.MPV_DEMUXER_MAX_BYTES || DEFAULT_MPV_DEMUXER_MAX_BYTES
-const MPV_DEMUXER_MAX_BACK_BYTES = process.env.MPV_DEMUXER_MAX_BACK_BYTES || '64MiB'
-const MPV_CACHE_SECS = process.env.MPV_CACHE_SECS || '60'
+const MPV_DEMUXER_MAX_BYTES = process.env.MPV_DEMUXER_MAX_BYTES || '24MiB'
+const MPV_DEMUXER_MAX_BACK_BYTES = process.env.MPV_DEMUXER_MAX_BACK_BYTES || '8MiB'
+const ELECTRON_MEMORY_OVERHEAD_MB = Number(process.env.ELECTRON_MEMORY_OVERHEAD_MB || 100)
+const MPV_RESERVED_BYTES = parseByteSize(MPV_DEMUXER_MAX_BYTES, 24 * 1024 * 1024) + parseByteSize(MPV_DEMUXER_MAX_BACK_BYTES, 8 * 1024 * 1024)
+const DEFAULT_RAM_STORE_MAX_BYTES = Math.max(64 * 1024 * 1024, (MAX_MEMORY_MB * 1024 * 1024) - MPV_RESERVED_BYTES - (ELECTRON_MEMORY_OVERHEAD_MB * 1024 * 1024))
+const MAX_MEMORY_BYTES = parseByteSize(process.env.MAX_MEMORY_BYTES, DEFAULT_RAM_STORE_MAX_BYTES)
+const MPV_CACHE_SECS = process.env.MPV_CACHE_SECS || '10'
+const MPV_CACHE_BACKBUFFER_KIB = Number(process.env.MPV_CACHE_BACKBUFFER_KIB || 8192)
 const MPV_CACHE_PAUSE_WAIT = process.env.MPV_CACHE_PAUSE_WAIT || '20'
 const MPV_NETWORK_TIMEOUT = process.env.MPV_NETWORK_TIMEOUT || '120'
 const RAM_STORE_GET_TIMEOUT_MS = Number(process.env.RAM_STORE_GET_TIMEOUT_MS || 45_000)
-const MAX_PENDING_RAM_READS = Number(process.env.MAX_PENDING_RAM_READS || 256)
+const MAX_PENDING_RAM_READS = Number(process.env.MAX_PENDING_RAM_READS || 64)
+const WEBTORRENT_MAX_CONNS = Number(process.env.WEBTORRENT_MAX_CONNS || 30)
+const WEBTORRENT_MAX_WEB_CONNS = Number(process.env.WEBTORRENT_MAX_WEB_CONNS || 4)
+const STREAM_RANGE_MAX_BYTES = parseByteSize(process.env.STREAM_RANGE_MAX_BYTES, 50 * 1024 * 1024)
 const STREAM_SERVER_READY_TIMEOUT_MS = Number(process.env.STREAM_SERVER_READY_TIMEOUT_MS || 8000)
 const TORRGETHER_STORAGE_MODE = 'ram'
 const WEBTORRENT_STORE_CACHE_SLOTS = 0
 const MPV_IPC_ATTEMPTS = Number(process.env.MPV_IPC_ATTEMPTS || 100)
 const MPV_IPC_RETRY_MS = Number(process.env.MPV_IPC_RETRY_MS || 100)
+const MPV_SHUTDOWN_GRACE_MS = Number(process.env.MPV_SHUTDOWN_GRACE_MS || 1500)
+const MPV_SHUTDOWN_KILL_AFTER_MS = Number(process.env.MPV_SHUTDOWN_KILL_AFTER_MS || 2000)
+const MPV_VERBOSE_LOGS = ['1', 'true', 'yes'].includes(String(process.env.MPV_VERBOSE_LOGS || '').toLowerCase())
 const PLAYER_LOG_MAX_LINES = 400
 const HEALTH_SNAPSHOT_INTERVAL_MS = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 30_000)
+const MEMORY_PRESSURE_INTERVAL_MS = Number(process.env.MEMORY_PRESSURE_INTERVAL_MS || 5000)
+const MEMORY_PRESSURE_HEAP_RATIO = Number(process.env.MEMORY_PRESSURE_HEAP_RATIO || 0.80)
+const MEMORY_PRESSURE_TARGET_RATIO = Number(process.env.MEMORY_PRESSURE_TARGET_RATIO || 0.50)
 const UPDATE_REPO = process.env.UPDATE_REPO || DEFAULT_UPDATE_REPO
 const UPDATE_CHECK_INTERVAL_MS = Number(process.env.UPDATE_CHECK_INTERVAL_MS || 6 * 60 * 60 * 1000)
 const DISABLE_UPDATE_CHECK = ['1', 'true', 'yes'].includes(String(process.env.DISABLE_UPDATE_CHECK || '').toLowerCase())
 let playerLogLines = []
 let mpvPreflight = null
 let healthSnapshotTimer = null
+let memoryPressureTimer = null
 
 const externalPlayer = {
   process: null,
@@ -117,6 +131,31 @@ const externalPlayer = {
   }
 }
 
+
+function parseByteSize(value, fallback) {
+  if (value == null || value === '') return fallback
+  if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value : fallback
+
+  const raw = String(value).trim()
+  const match = raw.match(/^(\d+(?:\.\d+)?)\s*(b|kb|kib|mb|mib|gb|gib)?$/i)
+  if (!match) {
+    const numeric = Number(raw)
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback
+  }
+
+  const amount = Number(match[1])
+  const unit = String(match[2] || 'b').toLowerCase()
+  const multipliers = {
+    b: 1,
+    kb: 1000,
+    kib: 1024,
+    mb: 1000 ** 2,
+    mib: 1024 ** 2,
+    gb: 1000 ** 3,
+    gib: 1024 ** 3
+  }
+  return Math.floor(amount * (multipliers[unit] || 1))
+}
 
 function nowIso() {
   return new Date().toISOString()
@@ -213,8 +252,80 @@ function tailText(text, max = 2000) {
   return clean.length > max ? clean.slice(-max) : clean
 }
 
+function parseRangeHeader(value) {
+  const match = String(value || '').match(/^bytes=(\d+)-(\d*)$/i)
+  if (!match) return null
+  const start = Number(match[1])
+  const end = match[2] === '' ? null : Number(match[2])
+  if (!Number.isSafeInteger(start) || start < 0) return null
+  if (end != null && (!Number.isSafeInteger(end) || end < start)) return null
+  return { start, end }
+}
+
+function guardStreamRequest(req) {
+  const parsed = parseRangeHeader(req.headers?.range)
+  if (!parsed) return
+
+  const pieceLength = Number(currentTorrent?.pieceLength)
+  if (Number.isFinite(pieceLength) && pieceLength > 0 && selectedFile) {
+    const absoluteOffset = (Number(selectedFile.offset) || 0) + parsed.start
+    getCurrentRamStore()?.setPlaybackHead?.(Math.floor(absoluteOffset / pieceLength))
+  }
+
+  if (!Number.isFinite(STREAM_RANGE_MAX_BYTES) || STREAM_RANGE_MAX_BYTES <= 0) return
+  const maxEnd = parsed.start + STREAM_RANGE_MAX_BYTES - 1
+  const fileEnd = Number.isFinite(Number(selectedFile?.length)) ? Number(selectedFile.length) - 1 : maxEnd
+  const cappedEnd = Math.min(parsed.end == null ? maxEnd : parsed.end, maxEnd, fileEnd)
+  if (cappedEnd >= parsed.start && cappedEnd !== parsed.end) {
+    req.headers.range = `bytes=${parsed.start}-${cappedEnd}`
+  }
+}
+
+function installStreamRequestGuard(streamServer) {
+  if (!streamServer?.prependListener) return
+  streamServer.prependListener('request', (req) => {
+    try {
+      guardStreamRequest(req)
+    } catch (err) {
+      appLogger.warn('Stream request guard failed', { message: err.message })
+    }
+  })
+}
+
+function isAllowedGithubReleaseUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return url.protocol === 'https:' &&
+      url.hostname.toLowerCase() === 'github.com' &&
+      /^\/[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+\/releases(?:\/|$)/.test(url.pathname)
+  } catch {
+    return false
+  }
+}
+
+function ensureMemoryPressureTimer() {
+  if (memoryPressureTimer || !Number.isFinite(MEMORY_PRESSURE_INTERVAL_MS) || MEMORY_PRESSURE_INTERVAL_MS <= 0) return
+  memoryPressureTimer = setInterval(() => {
+    const store = getCurrentRamStore()
+    if (!store?.forceEvictTo) return
+
+    const usage = process.memoryUsage()
+    const heapRatio = usage.heapTotal > 0 ? usage.heapUsed / usage.heapTotal : 0
+    if (heapRatio <= MEMORY_PRESSURE_HEAP_RATIO) return
+
+    const before = store.getStats?.()
+    const after = store.forceEvictTo(MEMORY_PRESSURE_TARGET_RATIO)
+    appLogger.warn('Forced RAM store eviction under heap pressure', {
+      heapRatio,
+      before,
+      after
+    })
+  }, MEMORY_PRESSURE_INTERVAL_MS)
+  memoryPressureTimer.unref?.()
+}
+
 function createClient() {
-  client = new WebTorrent({ maxConns: 80 })
+  client = new WebTorrent({ maxConns: WEBTORRENT_MAX_CONNS })
   client.on('error', err => {
     appLogger.error('WebTorrent client error', err)
     sendToRenderer('torrent:error', { message: err.message })
@@ -225,6 +336,7 @@ function createClient() {
   })
 
   serverInstance = client.createServer({ origin: '*' }, 'node')
+  installStreamRequestGuard(serverInstance.server)
   streamServerReady = false
   streamServerPort = null
   streamServerError = null
@@ -335,6 +447,8 @@ async function destroyWebTorrentClient() {
 async function shutdownResources() {
   if (healthSnapshotTimer) clearInterval(healthSnapshotTimer)
   healthSnapshotTimer = null
+  if (memoryPressureTimer) clearInterval(memoryPressureTimer)
+  memoryPressureTimer = null
   destroyRutrackerView()
   await stopExternalPlayer().catch(err => appLogger.warn('MPV shutdown warning', err))
   await closeWebTorrentStreamServer().catch(err => appLogger.warn('Stream server shutdown warning', err))
@@ -348,7 +462,9 @@ async function shutdownResources() {
 }
 
 function sendToRenderer(channel, payload) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+  if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+    win.webContents.send(channel, payload)
+  }
 }
 
 function sendRutrackerImport(payload) {
@@ -362,16 +478,21 @@ async function cookieHeaderForUrl(url) {
 
 async function fetchTorrentToMemory(url, maxBytes = MAX_TORRENT_FILE_BYTES) {
   const cookie = await cookieHeaderForUrl(url)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FETCH_TORRENT_TIMEOUT_MS)
+  timer.unref?.()
   const response = await fetch(url, {
+    signal: controller.signal,
     headers: {
       'User-Agent': 'Torrgether torrent importer',
       ...(cookie ? { Cookie: cookie } : {})
     }
-  })
+  }).finally(() => clearTimeout(timer))
 
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const length = Number(response.headers?.get?.('content-length'))
-  if (!validateTorrentDownloadSize(length, maxBytes)) {
+  const rawLength = response.headers?.get?.('content-length')
+  const length = rawLength == null || rawLength === '' ? null : Number(rawLength)
+  if (length != null && !validateTorrentDownloadSize(length, maxBytes)) {
     throw new Error(`.torrent file is too large. Limit is ${(maxBytes / 1024 / 1024).toFixed(0)} MiB.`)
   }
 
@@ -432,15 +553,19 @@ function handleRutrackerNavigation(url) {
 }
 
 function handleRutrackerDownload(event, item) {
+  event.preventDefault()
+
   const url = item.getURL?.() || ''
   const filename = item.getFilename?.() || ''
   const mimeType = item.getMimeType?.() || ''
 
-  if (!isTorrentDownload({ url, filename, mimeType })) return
-  event.preventDefault()
+  if (!isTorrentDownload({ url, filename, mimeType })) {
+    appLogger.info('Blocked non-torrent RuTracker download in RAM-only mode', { url, filename, mimeType })
+    return
+  }
 
   const totalBytes = item.getTotalBytes?.()
-  if (!validateTorrentDownloadSize(totalBytes, MAX_TORRENT_FILE_BYTES)) {
+  if (totalBytes != null && !validateTorrentDownloadSize(totalBytes, MAX_TORRENT_FILE_BYTES)) {
     sendToRenderer('torrent:error', { message: `.torrent file is too large. Limit is ${(MAX_TORRENT_FILE_BYTES / 1024 / 1024).toFixed(0)} MiB.` })
     return
   }
@@ -718,15 +843,20 @@ async function loadTorrent(payload, preferredFileIndex = null) {
           onWarning: warning => appLogger.warn('RAM store memory pressure', warning)
         },
         storeCacheSlots: WEBTORRENT_STORE_CACHE_SLOTS,
-        maxWebConns: Number(process.env.WEBTORRENT_MAX_WEB_CONNS || 8)
+        maxWebConns: WEBTORRENT_MAX_WEB_CONNS
       }
 
       playerLog('Using coherent RAM-only WebTorrent store', {
         maxChunks: MAX_MEMORY_CHUNKS,
         maxBytes: MAX_MEMORY_BYTES,
+        maxMemoryMB: MAX_MEMORY_MB,
+        mpvReservedBytes: MPV_RESERVED_BYTES,
+        electronMemoryOverheadMB: ELECTRON_MEMORY_OVERHEAD_MB,
         mpvDemuxerMaxBytes: MPV_DEMUXER_MAX_BYTES,
         getTimeoutMs: RAM_STORE_GET_TIMEOUT_MS,
         maxPendingReads: MAX_PENDING_RAM_READS,
+        maxConns: WEBTORRENT_MAX_CONNS,
+        maxWebConns: WEBTORRENT_MAX_WEB_CONNS,
         storeCacheSlots: WEBTORRENT_STORE_CACHE_SLOTS,
         strategy: addOpts.strategy
       })
@@ -765,9 +895,8 @@ async function loadTorrent(payload, preferredFileIndex = null) {
       selectedFile = torrent.files[chosen.index]
 
       torrent.files.forEach(file => file.deselect())
-      // RAM-only mode lets the HTTP stream request exactly the pieces MPV needs.
-      // Full-file prefetch is intentionally disabled so large files do not fill RAM.
-      playerLog('Full selected-file prefetch disabled in RAM-only mode; HTTP stream will fetch on demand', { file: selectedFile.name })
+      selectedFile.select?.()
+      playerLog('Selected file enabled with bounded RAM-only streaming', { file: selectedFile.name })
 
       const result = {
         name: torrent.name,
@@ -975,6 +1104,15 @@ function connectToMpvIpc(ipcPath, attempts = MPV_IPC_ATTEMPTS) {
 
 async function stopExternalPlayer(lastError = null) {
   playerLog('Stopping MPV if running', { pid: externalPlayer.process?.pid || null, connected: externalPlayer.status.connected })
+  const processRef = externalPlayer.process
+
+  if (processRef && externalPlayer.socket && externalPlayer.status.connected) {
+    await Promise.race([
+      mpvCommand(['quit']).catch(err => playerLog('MPV graceful quit failed', { message: err.message })),
+      delay(MPV_SHUTDOWN_GRACE_MS)
+    ])
+  }
+
   for (const { reject, timer } of externalPlayer.pending.values()) {
     clearTimeout(timer)
     reject(new Error('MPV was stopped'))
@@ -991,12 +1129,14 @@ async function stopExternalPlayer(lastError = null) {
   externalPlayer.buffer = ''
 
   try {
-    if (externalPlayer.process) {
-      externalPlayer.process.stdout?.removeAllListeners('data')
-      externalPlayer.process.stderr?.removeAllListeners('data')
-      externalPlayer.process.removeAllListeners('error')
-      externalPlayer.process.removeAllListeners('exit')
-      if (!externalPlayer.process.killed) externalPlayer.process.kill()
+    if (processRef) {
+      processRef.stdout?.removeAllListeners('data')
+      processRef.stderr?.removeAllListeners('data')
+      processRef.removeAllListeners('error')
+      processRef.removeAllListeners('exit')
+      if (!processRef.killed && processRef.exitCode == null) processRef.kill()
+      const exited = await waitForProcessExit(processRef, MPV_SHUTDOWN_KILL_AFTER_MS)
+      if (!exited) await forceKillProcess(processRef)
     }
   } catch {}
   externalPlayer.process = null
@@ -1019,6 +1159,40 @@ async function waitForMpvLoadSettled(timeoutMs) {
     }
     if (Number.isFinite(Number(externalPlayer.status.duration))) return
     await new Promise(resolve => setTimeout(resolve, 50))
+  }
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function waitForProcessExit(child, timeoutMs) {
+  return new Promise(resolve => {
+    if (!child || child.exitCode != null || child.signalCode != null) return resolve(true)
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    timer.unref?.()
+    const finish = result => {
+      clearTimeout(timer)
+      child.off?.('exit', onExit)
+      child.off?.('close', onExit)
+      resolve(result)
+    }
+    const onExit = () => finish(true)
+    child.once('exit', onExit)
+    child.once('close', onExit)
+  })
+}
+
+async function forceKillProcess(child) {
+  if (!child?.pid) return
+  try {
+    if (process.platform === 'win32') {
+      await execFileAsync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { timeout: 5000 })
+      return
+    }
+    child.kill('SIGKILL')
+  } catch (err) {
+    playerLog('MPV hard kill warning', { pid: child.pid, message: err.message })
   }
 }
 
@@ -1053,6 +1227,8 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
     '--force-window=yes',
     '--keep-open=no',
     '--cache=yes',
+    '--cache-on-disk=no',
+    `--cache-backbuffer=${MPV_CACHE_BACKBUFFER_KIB}`,
     '--cache-pause=yes',
     '--cache-pause-initial=yes',
     `--cache-pause-wait=${MPV_CACHE_PAUSE_WAIT}`,
@@ -1062,7 +1238,7 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
     `--demuxer-max-back-bytes=${MPV_DEMUXER_MAX_BACK_BYTES}`,
     `--network-timeout=${MPV_NETWORK_TIMEOUT}`,
     '--force-seekable=yes',
-    '--msg-level=all=v',
+    ...(MPV_VERBOSE_LOGS ? ['--msg-level=all=v'] : []),
     `--input-ipc-server=${ipcPath}`,
     `--title=Torrgether: ${selectedFile.name}`,
     playing ? '--pause=no' : '--pause=yes',
@@ -1262,7 +1438,8 @@ ipcMain.handle('torrent:select-file', async (_event, selectedFileIndex) => {
     if (!file) throw new Error('Invalid file index')
     currentTorrent.files.forEach(f => f.deselect())
     selectedFile = file
-    playerLog('Selected file changed; RAM-only stream will fetch pieces on demand', { file: selectedFile.name })
+    selectedFile.select?.()
+    playerLog('Selected file changed; bounded RAM-only stream will fetch pieces on demand', { file: selectedFile.name })
     return {
       ok: true,
       selectedFileIndex,
@@ -1307,6 +1484,8 @@ ipcMain.handle('torrent:status', async () => {
     ramRecentEvictions: ramStats.recentEvictions ?? null,
     ramPendingReads: ramStats.pendingReads ?? null,
     ramMaxPendingReads: ramStats.maxPendingReads ?? null,
+    ramPlaybackHead: ramStats.playbackHead ?? null,
+    ramActiveReads: ramStats.activeReads ?? null,
     ramOverLimitBytes: ramStats.overLimitBytes ?? null,
     ramOverLimitWarnings: ramStats.overLimitWarnings ?? null,
     memoryChunks: ramStats.chunks ?? null,
@@ -1405,14 +1584,15 @@ ipcMain.handle('app:update-check', async () => {
 
 ipcMain.handle('app:open-release-page', async (_event, url) => {
   const target = String(url || `https://github.com/${UPDATE_REPO}/releases`).trim()
-  if (!/^https:\/\/github\.com\//i.test(target)) return { ok: false, error: 'Only GitHub release URLs can be opened' }
+  if (!isAllowedGithubReleaseUrl(target)) return { ok: false, error: 'Only GitHub release URLs can be opened' }
   await shell.openExternal(target)
   return { ok: true, url: target }
 })
 
 ipcMain.handle('sources:search', async (_event, { query, filters } = {}) => {
   const result = await searchSources(query, filters, globalThis.fetch)
-  sourceResultCache = new Map(result.results.map(item => [item.id, item]))
+  for (const item of result.results || []) sourceResultCache.set(item.id, item)
+  while (sourceResultCache.size > 1000) sourceResultCache.delete(sourceResultCache.keys().next().value)
   return result
 })
 
@@ -1496,8 +1676,8 @@ process.on('uncaughtException', err => {
   sendToRenderer('torrent:error', { message: err?.message || String(err) })
 })
 
-process.on('exit', code => {
-  try { appLogger.info('Desktop process exit', { code }) } catch {}
+process.on('beforeExit', code => {
+  try { appLogger.info('Desktop process beforeExit', { code }) } catch {}
 })
 
 app.whenReady().then(async () => {
@@ -1513,9 +1693,16 @@ app.whenReady().then(async () => {
     logPath: appLogger.filePath,
     mpvLogPath: mpvLogger.filePath
   })
-  createClient()
+  try {
+    createClient()
+  } catch (err) {
+    appLogger.error('Failed to initialize WebTorrent client', { error: err, health: getRuntimeHealthSnapshot() })
+    dialog.showErrorBox('Torrgether streaming failed to start', err?.message || String(err))
+    throw err
+  }
   createWindow()
   ensureHealthSnapshotTimer()
+  ensureMemoryPressureTimer()
   await refreshMpvPreflight()
 }).catch(err => {
   appLogger.error('Desktop app failed to start', { error: err, health: getRuntimeHealthSnapshot() })

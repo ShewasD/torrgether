@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
 import { shouldDisableHardwareAcceleration } from '../desktop/gpuPolicy.js'
 import { waitForReady } from '../desktop/streamServerReady.js'
 import { normalizeServerUrl } from '../shared/clientUrl.js'
@@ -49,4 +50,17 @@ test('stream-server wait resolves, rejects startup errors, and times out cleanly
     }),
     /Timed out/
   )
+})
+
+test('desktop runtime uses bounded RAM-only stream defaults', async () => {
+  const main = await fs.readFile(new URL('../desktop/main.js', import.meta.url), 'utf8')
+
+  assert.match(main, /MPV_CACHE_SECS = process\.env\.MPV_CACHE_SECS \|\| '10'/)
+  assert.match(main, /MPV_DEMUXER_MAX_BYTES = process\.env\.MPV_DEMUXER_MAX_BYTES \|\| '24MiB'/)
+  assert.match(main, /MPV_DEMUXER_MAX_BACK_BYTES = process\.env\.MPV_DEMUXER_MAX_BACK_BYTES \|\| '8MiB'/)
+  assert.match(main, /WEBTORRENT_MAX_CONNS = Number\(process\.env\.WEBTORRENT_MAX_CONNS \|\| 30\)/)
+  assert.match(main, /--cache-on-disk=no/)
+  assert.match(main, /STREAM_RANGE_MAX_BYTES/)
+  assert.match(main, /taskkill/)
+  assert.equal(main.includes("'--msg-level=all=v',"), false)
 })

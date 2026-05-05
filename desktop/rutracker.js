@@ -45,8 +45,9 @@ export function isTorrentDownload({ url, mimeType, filename } = {}) {
 }
 
 export function validateTorrentDownloadSize(bytes, maxBytes = MAX_RUTRACKER_TORRENT_BYTES) {
+  if (bytes == null) return false
   const size = Number(bytes)
-  if (!Number.isFinite(size)) return true
+  if (!Number.isFinite(size)) return false
   if (size < 0) return false
   return size <= maxBytes
 }

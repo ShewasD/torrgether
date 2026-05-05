@@ -5,19 +5,22 @@ keeps media chunks in RAM, launches MPV as the only playback engine, and uses a
 small signaling server to sync rooms, torrent selection, host failover, and
 playback commands.
 
-## What Is New In 0.3
+## What Is New In 0.4
 
-- Catalog-style desktop UI with search, posters, source results, torrent detail
-  rows, room controls, MPV controls, RAM cache status, participants, and logs.
-- Source provider layer with duplicate collapsing by info hash, magnet `btih`,
-  or normalized title/size/quality metadata.
-- Open-license catalog support through local curated entries and Archive.org
-  search. RuTracker remains an optional isolated browser panel.
-- In-app GitHub release update checks for `ShewasD/torrgether`.
-- Larger locale set for the interface plus a separate content/audio language
-  filter with fallback warnings when no matching audio language is found.
-- Bounded log rotation, stricter auth/token/CORS checks, safer torrent download
-  validation, and RAM-only `.torrent` import from the embedded tracker panel.
+- RAM-only playback is stricter: MPV defaults to a 10 second RAM buffer,
+  `24MiB` demuxer memory, no disk cache, smaller WebTorrent connection counts,
+  and capped local HTTP range reads.
+- `LruMemoryChunkStore` now tracks MPV range reads, protects active playback
+  windows, evicts old chunks under heap pressure, and prioritizes refetches for
+  pieces MPV seeks back to.
+- MPV shutdown is more reliable: Torrgether asks MPV to quit over IPC, then
+  falls back to process-tree termination if the player hangs.
+- Signaling is hardened with explicit Socket.IO ping/pong timing, bounded room
+  creation, disabled connection-state recovery by default, and safer auth
+  limiter behavior.
+- Update checks, source-provider requests, poster URLs, catalog search races,
+  renderer log updates, and RuTracker imports have stricter timeouts and
+  validation.
 
 ## Install
 
@@ -81,10 +84,16 @@ SERVER_TOKEN=long-random-token
 MPV_PATH=/custom/path/to/mpv
 MAX_MEMORY_MB=512
 MAX_MEMORY_CHUNKS=384
+MAX_PENDING_RAM_READS=64
+MPV_CACHE_SECS=10
+MPV_DEMUXER_MAX_BYTES=24MiB
+WEBTORRENT_MAX_CONNS=30
+WEBTORRENT_MAX_WEB_CONNS=4
 CONTENT_AUDIO_LANGUAGE=any
 UPDATE_REPO=ShewasD/torrgether
 UPDATE_CHECK_INTERVAL_MS=21600000
 LOG_LEVEL=info
+# 5 MiB
 LOG_MAX_BYTES=5242880
 LOG_MAX_FILES=5
 ```
@@ -98,6 +107,10 @@ PUBLIC_URL=https://watch.example.com
 CORS_ORIGIN=https://watch.example.com
 SERVER_TOKEN=long-random-token
 ROOM_EMPTY_TTL_MS=300000
+MAX_ROOMS=5000
+SOCKET_PING_INTERVAL_MS=30000
+SOCKET_PING_TIMEOUT_MS=60000
+SOCKET_CONNECTION_STATE_RECOVERY=0
 ```
 
 For production, set `SERVER_TOKEN` and restrict `CORS_ORIGIN`. `CORS_ORIGIN=*`
@@ -146,15 +159,24 @@ Relevant controls:
 ```bash
 MAX_MEMORY_MB=512
 MAX_MEMORY_CHUNKS=384
-RAM_STORE_LOW_WATERMARK_RATIO=0.85
-MAX_PENDING_RAM_READS=256
-MPV_CACHE_SECS=60
-MPV_DEMUXER_MAX_BYTES=
+MAX_PENDING_RAM_READS=64
+RAM_STORE_LOW_WATERMARK_RATIO=0.75
+RAM_STORE_RECENT_EVICTION_TTL_MS=30000
+RAM_STORE_WINDOW_AHEAD_SECS=30
+RAM_STORE_WINDOW_BEHIND_SECS=10
+MPV_CACHE_SECS=10
+MPV_DEMUXER_MAX_BYTES=24MiB
+MPV_DEMUXER_MAX_BACK_BYTES=8MiB
+WEBTORRENT_MAX_CONNS=30
+WEBTORRENT_MAX_WEB_CONNS=4
+STREAM_RANGE_MAX_BYTES=50MiB
 ```
 
 When RAM pressure is high, the store evicts old chunks, marks evicted pieces
 unverified, and lets WebTorrent refetch them instead of ending MPV's stream
-early.
+early. `MAX_MEMORY_BYTES`, when set, still overrides the calculated RAM store
+budget; otherwise Torrgether reserves memory for MPV and Electron before sizing
+the chunk store.
 
 ## Development
 
@@ -188,6 +210,7 @@ npm run pack
   on the signaling server.
 - Playback stalls: lower `MPV_CACHE_SECS`, lower video quality, or increase
   `MAX_MEMORY_MB` if the machine has enough RAM.
+- Release artifacts for this line use version `0.4.0` and tag `v0.4.0`.
 
 ## Legal Use
 

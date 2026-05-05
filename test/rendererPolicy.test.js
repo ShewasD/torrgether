@@ -14,3 +14,14 @@ test('renderer is MPV-only and does not include HTML video playback', async () =
   assert.equal(renderer.includes('MEDIA_ERR_'), false)
   assert.match(renderer, /launchMpv/)
 })
+
+test('renderer avoids stale catalog and torrent payload hazards', async () => {
+  const renderer = await fs.readFile(new URL('../renderer/renderer.js', import.meta.url), 'utf8')
+
+  assert.match(renderer, /crypto\.subtle\.digest\('SHA-256'/)
+  assert.equal(renderer.includes('base64.slice(0, 120)'), false)
+  assert.equal(renderer.includes('payload.selectedFileIndex ='), false)
+  assert.match(renderer, /sourceSearchGeneration/)
+  assert.match(renderer, /safePosterUrl/)
+  assert.equal(renderer.includes('renderSelectedSource(results[0])'), false)
+})

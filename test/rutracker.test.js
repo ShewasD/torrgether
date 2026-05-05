@@ -34,6 +34,7 @@ test('validates torrent download size and derives an import name', () => {
   assert.equal(validateTorrentDownloadSize(10, 10), true)
   assert.equal(validateTorrentDownloadSize(11, 10), false)
   assert.equal(validateTorrentDownloadSize(-1, 10), false)
+  assert.equal(validateTorrentDownloadSize(undefined, 10), false)
   assert.equal(importNameForTorrent({ filename: '', url: 'https://rutracker.org/files/demo.torrent' }), 'demo.torrent')
 })
 

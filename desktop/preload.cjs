@@ -13,8 +13,8 @@ function appLog(level, message, data) {
 
 function closeSocket() {
   if (!socket) return
-  socket.removeAllListeners()
   socket.disconnect()
+  socket.removeAllListeners()
   socket = null
   rendererSocketHandlers.clear()
 }

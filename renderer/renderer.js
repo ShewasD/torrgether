@@ -21,7 +21,6 @@ const els = {
   detailDescription: $('detailDescription'),
   detailPoster: $('detailPoster'),
   detailImportBtn: $('detailImportBtn'),
-  detailFavoriteBtn: $('detailFavoriteBtn'),
   torrentList: $('torrentList'),
   serverUrl: $('serverUrl'),
   serverToken: $('serverToken'),
@@ -118,6 +117,10 @@ const state = {
 localStorage.setItem('torrgether.clientId', state.clientId)
 const busyButtons = new Set()
 const intervalHandles = new Set()
+const rendererLogLines = []
+let rendererLogFlush = null
+let sourceSearchGeneration = 0
+let sourceSearchTimer = null
 
 function registerInterval(callback, ms) {
   const id = setInterval(callback, ms)
@@ -153,12 +156,20 @@ function setContentLanguage(language) {
   state.contentLanguage = String(language || 'any')
   localStorage.setItem('torrgether.contentLanguage', state.contentLanguage)
   if (els.contentLanguageSelect) els.contentLanguageSelect.value = state.contentLanguage
-  searchCatalog().catch(err => logT('sources.importFailed', { error: err.message || err }))
+  scheduleSearchCatalog()
+}
+
+function flushRendererLog() {
+  rendererLogFlush = null
+  if (!els.log) return
+  els.log.textContent = rendererLogLines.join('\n').slice(0, 6000)
 }
 
 function log(message) {
   const line = `[${new Date().toLocaleTimeString()}] ${message}`
-  els.log.textContent = `${line}\n${els.log.textContent}`.slice(0, 6000)
+  rendererLogLines.unshift(line)
+  if (rendererLogLines.length > 120) rendererLogLines.length = 120
+  if (!rendererLogFlush) rendererLogFlush = requestAnimationFrame(flushRendererLog)
   window.torrgether?.writeAppLog?.({ level: 'info', source: 'renderer', message })
 }
 
@@ -318,12 +329,18 @@ async function refreshMpvLogs() {
   if (result.status?.lastStderr) logT('log.latestMpvStderr', { stderr: result.status.lastStderr })
 }
 
-function torrentKey(payload) {
+async function sha256Hex(value) {
+  const data = new TextEncoder().encode(String(value || ''))
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function torrentKey(payload) {
   if (!payload) return null
   const selected = payload.selectedFileIndex ?? ''
   if (payload.kind === 'magnet') return `magnet:${payload.magnetURI}:${selected}`
-  if (payload.kind === 'torrent-file') return `file:${payload.name}:${payload.base64.slice(0, 120)}:${selected}`
-  return JSON.stringify(payload).slice(0, 200)
+  if (payload.kind === 'torrent-file') return `file:${payload.name}:${await sha256Hex(payload.base64)}:${selected}`
+  return `payload:${await sha256Hex(JSON.stringify(payload))}`
 }
 
 function expectedRoomTime(roomState) {
@@ -374,13 +391,21 @@ function resultMeta(result) {
   ].filter(Boolean).join(' · ')
 }
 
+function safePosterUrl(value) {
+  try {
+    const url = new URL(String(value || ''), window.location.href)
+    if (url.protocol === 'https:' || url.protocol === 'http:') return url.href
+  } catch {}
+  return 'https://archive.org/services/img/Sintel'
+}
+
 function renderSelectedSource(result) {
   state.selectedSourceResult = result || null
   const title = result?.title || 'Torrgether'
   els.detailTitle.textContent = title
   els.detailMeta.textContent = result ? resultMeta(result) : 'RAM-only streaming'
   els.detailDescription.textContent = result?.description || t('app.subtitle')
-  if (els.detailPoster && result?.posterUrl) els.detailPoster.src = result.posterUrl
+  if (els.detailPoster) els.detailPoster.src = safePosterUrl(result?.posterUrl)
   renderTorrentList(result)
 }
 
@@ -436,7 +461,8 @@ function renderSourceResults(results = []) {
     const img = document.createElement('img')
     img.loading = 'lazy'
     img.alt = ''
-    img.src = result.posterUrl || 'https://archive.org/services/img/Sintel'
+    img.src = safePosterUrl(result.posterUrl)
+    img.addEventListener('error', () => { img.src = safePosterUrl(null) }, { once: true })
     const score = document.createElement('span')
     score.className = 'poster-score'
     score.textContent = `↑ ${result.seeders ?? 0}`
@@ -452,16 +478,19 @@ function renderSourceResults(results = []) {
     els.sourceResults.appendChild(button)
   }
 
-  renderSelectedSource(results[0])
+  const selected = results.find(result => result.id === state.selectedSourceResult?.id) || null
+  renderSelectedSource(selected)
 }
 
 async function searchCatalog() {
   if (!window.torrgether?.searchSources) return
+  const generation = ++sourceSearchGeneration
   const query = els.sourceSearchInput?.value || ''
   const response = await window.torrgether.searchSources({
     query,
     filters: { language: state.contentLanguage }
   })
+  if (generation !== sourceSearchGeneration) return
   if (!response.ok) throw new Error(response.error || 'source search failed')
   renderSourceResults(response.results || [])
   if (els.languageNotice) {
@@ -470,6 +499,14 @@ async function searchCatalog() {
       ? t('sources.languageFallback', { language: state.contentLanguage })
       : ''
   }
+}
+
+function scheduleSearchCatalog(delay = 250) {
+  if (sourceSearchTimer) clearTimeout(sourceSearchTimer)
+  sourceSearchTimer = setTimeout(() => {
+    sourceSearchTimer = null
+    searchCatalog().catch(err => logT('sources.importFailed', { error: err.message || err }))
+  }, delay)
 }
 
 async function importSelectedSource(result = state.selectedSourceResult) {
@@ -553,7 +590,7 @@ async function applyPlayback(roomState, hard = false) {
     })
     if (result.ok) state.externalStatus = result.status
   } finally {
-    setTimeout(() => { state.suppressHostPoll = false }, 500)
+    state.suppressHostPoll = false
   }
 }
 
@@ -618,8 +655,8 @@ async function autoLaunchMpv(reason) {
 }
 
 async function loadTorrentFromRoom(torrentPayload) {
-  const key = torrentKey(torrentPayload)
   if (!torrentPayload) return
+  const key = await torrentKey(torrentPayload)
   if (key === state.torrentPayloadKey && state.currentTorrent) {
     await autoLaunchMpv('torrent already loaded')
     return
@@ -755,22 +792,23 @@ async function hostSetTorrentPayload(payload) {
   state.currentTorrent = null
   updateVideoInfo()
 
-  const localLoad = await window.torrgether.loadTorrent({ payload })
+  const roomPayload = { ...payload }
+  const localLoad = await window.torrgether.loadTorrent({ payload: roomPayload })
   if (!localLoad.ok) {
     logT('log.torrentError', { error: localLoad.error })
     updateActionState()
     return
   }
 
-  payload.selectedFileIndex = localLoad.torrent.selectedFileIndex
-  payload.name = payload.name || localLoad.torrent.name
+  roomPayload.selectedFileIndex = localLoad.torrent.selectedFileIndex
+  roomPayload.name = roomPayload.name || localLoad.torrent.name
 
   state.currentTorrent = localLoad.torrent
-  state.torrentPayloadKey = torrentKey(payload)
+  state.torrentPayloadKey = await torrentKey(roomPayload)
   renderFileOptions(localLoad.torrent)
   updateVideoInfo()
 
-  const ack = await window.torrgether.socketEmitAck('torrent:set', { torrent: payload })
+  const ack = await window.torrgether.socketEmitAck('torrent:set', { torrent: roomPayload })
   if (!ack.ok) return logT('log.serverRejected', { error: ack.error })
 
   if (ack.torrentVersion) {
@@ -920,9 +958,12 @@ els.joinBtn.addEventListener('click', joinRoom)
 els.catalogSourceTab?.addEventListener('click', () => setSourceTab('catalog'))
 els.manualSourceTab.addEventListener('click', () => setSourceTab('manual'))
 els.rutrackerSourceTab.addEventListener('click', () => showRutrackerView())
-els.sourceSearchBtn?.addEventListener('click', () => searchCatalog().catch(err => logT('sources.importFailed', { error: err.message || err })))
+els.sourceSearchBtn?.addEventListener('click', () => scheduleSearchCatalog(0))
 els.sourceSearchInput?.addEventListener('keydown', event => {
-  if (event.key === 'Enter') searchCatalog().catch(err => logT('sources.importFailed', { error: err.message || err }))
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    scheduleSearchCatalog(0)
+  }
 })
 els.detailImportBtn?.addEventListener('click', () => importSelectedSource())
 els.updateActionBtn?.addEventListener('click', () => {
@@ -1160,6 +1201,6 @@ window.torrgether.onRutrackerStatus(payload => {
 setLocale(state.locale)
 if (els.contentLanguageSelect) els.contentLanguageSelect.value = state.contentLanguage
 applyClientConfig().then(() => updateVideoInfo())
-searchCatalog().catch(err => logT('sources.importFailed', { error: err.message || err }))
+scheduleSearchCatalog(0)
 checkForUpdates({ quiet: true }).catch(() => {})
 updateActionState()

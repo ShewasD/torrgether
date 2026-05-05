@@ -41,3 +41,31 @@ test('fetchSourceTorrent returns RAM payload and enforces size', async () => {
     /too large/
   )
 })
+
+test('fetchSourceTorrent enforces streamed size limits', async () => {
+  const response = {
+    ok: true,
+    headers: new Map(),
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]))
+        controller.enqueue(new Uint8Array([3, 4]))
+        controller.close()
+      }
+    })
+  }
+
+  await assert.rejects(
+    () => fetchSourceTorrent({ title: 'Demo', torrentUrl: 'https://example.test/demo.torrent' }, async () => response, { maxBytes: 3 }),
+    /too large/
+  )
+})
+
+test('searchSources tolerates source provider timeout failures', async () => {
+  const response = await searchSources('sintel', { language: 'any' }, async () => {
+    throw new Error('timeout')
+  })
+
+  assert.equal(response.ok, true)
+  assert.ok(response.results.length > 0)
+})

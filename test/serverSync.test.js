@@ -192,3 +192,29 @@ test('server rejects oversized torrent-file signaling payloads', async t => {
   assert.equal(ack.ok, false)
   assert.match(ack.error, /too large/)
 })
+
+test('server enforces room capacity', async t => {
+  const server = await createTestServer({ maxRooms: 1 })
+  const first = await connectSocket(serverUrl(server))
+  const second = await connectSocket(serverUrl(server))
+  t.after(async () => {
+    first.disconnect()
+    second.disconnect()
+    await server.close()
+  })
+
+  const firstAck = await emitAck(first, 'room:join', {
+    roomId: 'room-one',
+    clientId: 'client-a',
+    name: 'A'
+  })
+  assert.equal(firstAck.ok, true)
+
+  const secondAck = await emitAck(second, 'room:join', {
+    roomId: 'room-two',
+    clientId: 'client-b',
+    name: 'B'
+  })
+  assert.equal(secondAck.ok, false)
+  assert.match(secondAck.error, /Room limit reached/)
+})

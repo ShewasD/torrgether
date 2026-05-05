@@ -338,3 +338,80 @@ test('recently evicted missing chunks wait for reverify instead of ending the st
   assert.equal(store.recoveries, 1)
   assert.equal(store.recoveryWaits, 1)
 })
+
+test('playback window protects nearby chunks from eviction', async () => {
+  const torrent = new FakeTorrent()
+  const store = new LruMemoryChunkStore(4, {
+    torrent,
+    maxBytes: 16,
+    maxChunks: 4,
+    windowBehindPieces: 1,
+    windowAheadPieces: 2,
+    lowWatermarkRatio: 0.5
+  })
+  store.setPlaybackHead(5)
+
+  for (const index of [0, 4, 5, 6, 7]) {
+    torrent.bitfield.set(index, true)
+    await put(store, index, String(index).repeat(4))
+  }
+
+  assert.equal(store.chunks.has(0), false)
+  assert.equal(store.chunks.has(4), true)
+  assert.equal(store.chunks.has(5), true)
+  assert.equal(store.chunks.has(6), true)
+})
+
+test('active reads are temporarily protected during forced eviction', async () => {
+  const torrent = new FakeTorrent()
+  const store = new LruMemoryChunkStore(4, {
+    torrent,
+    maxBytes: 16,
+    maxChunks: 4,
+    activeReadTtlMs: 50
+  })
+
+  for (let index = 0; index < 4; index += 1) {
+    torrent.bitfield.set(index, true)
+    await put(store, index, String(index).repeat(4))
+  }
+
+  assert.equal((await get(store, 0)).toString(), '0000')
+  store.forceEvictTo(0.25)
+
+  assert.equal(store.chunks.has(0), true)
+  assert.equal(store.chunks.size, 1)
+})
+
+test('closing store removes stale recovery listeners', async () => {
+  const torrent = new FakeTorrent()
+  const store = new LruMemoryChunkStore(4, { torrent, maxBytes: 16, getTimeoutMs: 200 })
+  torrent.bitfield.set(8, true)
+  const pending = get(store, 8)
+
+  assert.equal(torrent.listenerCount('verified'), 1)
+  store.close()
+  assert.equal(torrent.listenerCount('verified'), 0)
+  await assert.rejects(pending, /Store is closed/)
+})
+
+test('forceEvictTo returns pressure stats and refetches evicted pieces with priority', async () => {
+  const torrent = new FakeTorrent()
+  const store = new LruMemoryChunkStore(4, { torrent, maxBytes: 16, maxChunks: 4 })
+
+  for (let index = 0; index < 4; index += 1) {
+    torrent.bitfield.set(index, true)
+    await put(store, index, String(index).repeat(4))
+  }
+
+  const stats = store.forceEvictTo(0.5)
+  assert.equal(stats.bytes <= 8, true)
+  assert.equal(store.evictions > 0, true)
+
+  const evicted = torrent.unverified[0]
+  const pending = get(store, evicted)
+  assert.deepEqual(torrent.selections.at(-1), { start: evicted, end: evicted, priority: 2 })
+  assert.deepEqual(torrent.criticalPieces.at(-1), { start: evicted, end: evicted })
+  store.close()
+  await assert.rejects(pending, /Store is closed/)
+})

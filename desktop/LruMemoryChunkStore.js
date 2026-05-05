@@ -8,11 +8,15 @@
 
 const DEFAULT_MAX_MEMORY_MB = 512
 const DEFAULT_GET_TIMEOUT_MS = 45_000
-const DEFAULT_MAX_PENDING_READS = 256
+const DEFAULT_MAX_PENDING_READS = 64
 const DEFAULT_WARNING_INTERVAL_MS = 60_000
-const DEFAULT_LOW_WATERMARK_RATIO = 0.85
-const DEFAULT_RECENT_EVICTION_TTL_MS = 120_000
+const DEFAULT_LOW_WATERMARK_RATIO = 0.75
+const DEFAULT_RECENT_EVICTION_TTL_MS = 30_000
 const DEFAULT_MAX_RECENT_EVICTIONS = 4096
+const DEFAULT_WINDOW_AHEAD_SECS = 30
+const DEFAULT_WINDOW_BEHIND_SECS = 10
+const DEFAULT_ACTIVE_READ_TTL_MS = 8000
+const DEFAULT_AVG_BITRATE_BPS = 5_000_000
 
 function toPositiveNumber(value, fallback) {
   const number = Number(value)
@@ -28,6 +32,12 @@ function makeNotFoundError(index, message = `Chunk ${index} is not in RAM cache`
   const err = new Error(message)
   err.notFound = true
   return err
+}
+
+function piecesForWindow({ seconds, bitrateBps, chunkLength, minimum }) {
+  const bytesPerSecond = toPositiveNumber(bitrateBps, DEFAULT_AVG_BITRATE_BPS) / 8
+  const bytes = toPositiveNumber(seconds, 0) * bytesPerSecond
+  return Math.max(minimum, Math.ceil(bytes / Math.max(1, chunkLength)))
 }
 
 export default class LruMemoryChunkStore {
@@ -53,6 +63,27 @@ export default class LruMemoryChunkStore {
     this.recentEvictionTtlMs = toPositiveNumber(opts.recentEvictionTtlMs ?? process.env.RAM_STORE_RECENT_EVICTION_TTL_MS, DEFAULT_RECENT_EVICTION_TTL_MS)
     this.maxRecentEvictions = toPositiveNumber(opts.maxRecentEvictions ?? process.env.RAM_STORE_MAX_RECENT_EVICTIONS, DEFAULT_MAX_RECENT_EVICTIONS)
     this.onWarning = typeof opts.onWarning === 'function' ? opts.onWarning : null
+    this.activeReadTtlMs = toPositiveNumber(opts.activeReadTtlMs ?? process.env.RAM_STORE_ACTIVE_READ_TTL_MS, DEFAULT_ACTIVE_READ_TTL_MS)
+    this.playbackHead = null
+    this.windowAheadPieces = toPositiveNumber(
+      opts.windowAheadPieces ?? process.env.RAM_STORE_WINDOW_AHEAD_PIECES,
+      piecesForWindow({
+        seconds: opts.windowAheadSecs ?? process.env.RAM_STORE_WINDOW_AHEAD_SECS ?? DEFAULT_WINDOW_AHEAD_SECS,
+        bitrateBps: opts.avgBitrateBps ?? process.env.RAM_STORE_AVG_BITRATE_BPS,
+        chunkLength,
+        minimum: 2
+      })
+    )
+    this.windowBehindPieces = toPositiveNumber(
+      opts.windowBehindPieces ?? process.env.RAM_STORE_WINDOW_BEHIND_PIECES,
+      piecesForWindow({
+        seconds: opts.windowBehindSecs ?? process.env.RAM_STORE_WINDOW_BEHIND_SECS ?? DEFAULT_WINDOW_BEHIND_SECS,
+        bitrateBps: opts.avgBitrateBps ?? process.env.RAM_STORE_AVG_BITRATE_BPS,
+        chunkLength,
+        minimum: 1
+      })
+    )
+    this.activeReads = new Map()
 
     this.closed = false
     this.chunks = new Map()
@@ -98,8 +129,17 @@ export default class LruMemoryChunkStore {
       pendingReads: this.pendingReadCount,
       pendingReadCount: this.pendingReadCount,
       maxPendingReads: this.maxPendingReads,
-      overLimitWarnings: this.overLimitWarnings
+      overLimitWarnings: this.overLimitWarnings,
+      playbackHead: this.playbackHead,
+      windowAheadPieces: this.windowAheadPieces,
+      windowBehindPieces: this.windowBehindPieces,
+      activeReads: this.activeReads.size
     }
+  }
+
+  setPlaybackHead(pieceIndex) {
+    if (!Number.isInteger(pieceIndex) || pieceIndex < 0) return
+    this.playbackHead = pieceIndex
   }
 
   put(index, buffer, cb = () => {}) {
@@ -118,6 +158,7 @@ export default class LruMemoryChunkStore {
 
     if (this.closed) return queueMicrotask(() => cb(new Error('Store is closed')))
 
+    this._touchActiveRead(index)
     const hit = this._readChunk(index, opts)
     if (hit) return queueMicrotask(() => cb(null, hit))
 
@@ -148,8 +189,18 @@ export default class LruMemoryChunkStore {
     this.chunks.clear()
     this.recentEvictions.clear()
     this.bytes = 0
+    for (const timer of this.activeReads.values()) clearTimeout(timer)
+    this.activeReads.clear()
     this._failPending(new Error('Store is closed'))
     if (this.torrent?._torrgetherRamStore === this) delete this.torrent._torrgetherRamStore
+  }
+
+  _touchActiveRead(index) {
+    const existing = this.activeReads.get(index)
+    if (existing) clearTimeout(existing)
+    const timer = setTimeout(() => this.activeReads.delete(index), this.activeReadTtlMs)
+    timer.unref?.()
+    this.activeReads.set(index, timer)
   }
 
   _setChunk(index, buffer) {
@@ -163,6 +214,7 @@ export default class LruMemoryChunkStore {
     this.recentEvictions.delete(index)
     this.bytes += buffer.length
     this._evictUntilWithinLimits(index)
+    if (this.chunks.size > this.maxChunks || this.bytes > this.maxBytes) this._emergencyEvictOldChunks()
     this._warnIfOverLimit(index)
   }
 
@@ -183,24 +235,82 @@ export default class LruMemoryChunkStore {
   _evictUntilWithinLimits(protectedIndex) {
     if (this.chunks.size <= this.maxChunks && this.bytes <= this.maxBytes) return
 
-    while ((this.chunks.size > this.lowWatermarkChunks || this.bytes > this.lowWatermarkBytes) && this.chunks.size > 1) {
+    while (this.chunks.size > this.lowWatermarkChunks || this.bytes > this.lowWatermarkBytes) {
       const oldest = this._oldestEvictableIndex(protectedIndex)
-      if (oldest == null) return
+      if (oldest == null) {
+        const fallback = this._fallbackEvictIndex(protectedIndex)
+        if (fallback == null) return
+        this._doEvict(fallback, false)
+        continue
+      }
 
-      const oldBuffer = this.chunks.get(oldest)
-      this._markPieceUnavailable(oldest, false)
-      this.chunks.delete(oldest)
-      this._rememberEviction(oldest)
-      this.bytes -= oldBuffer?.length || 0
-      this.evictions += 1
+      this._doEvict(oldest, false)
     }
   }
 
   _oldestEvictableIndex(protectedIndex) {
     for (const index of this.chunks.keys()) {
-      if (index !== protectedIndex) return index
+      if (index === protectedIndex) continue
+      if (this._isProtected(index)) continue
+      return index
     }
     return null
+  }
+
+  _isProtected(index) {
+    if (this.activeReads.has(index)) return true
+    if (this.playbackHead == null) return false
+    const start = this.playbackHead - this.windowBehindPieces
+    const end = this.playbackHead + this.windowAheadPieces
+    return index >= start && index <= end
+  }
+
+  _fallbackEvictIndex(protectedIndex = null) {
+    if (this.playbackHead == null) return null
+    let candidate = null
+    let farthestBehind = 0
+    for (const index of this.chunks.keys()) {
+      if (index === protectedIndex || this.activeReads.has(index)) continue
+      const behind = this.playbackHead - index
+      if (behind <= this.windowBehindPieces || behind <= farthestBehind) continue
+      candidate = index
+      farthestBehind = behind
+    }
+    return candidate
+  }
+
+  _emergencyEvictOldChunks() {
+    if (this.playbackHead == null) return
+    const cutoff = this.playbackHead - this.windowBehindPieces * 2
+    for (const index of [...this.chunks.keys()]) {
+      if (index >= cutoff || this.activeReads.has(index)) continue
+      this._doEvict(index, false)
+      if (this.chunks.size <= this.maxChunks && this.bytes <= this.maxBytes) return
+    }
+  }
+
+  forceEvictTo(targetRatio = 0.5) {
+    const ratio = toRatio(targetRatio, 0.5)
+    const targetBytes = Number.isFinite(this.maxBytes) ? Math.max(1, Math.floor(this.maxBytes * ratio)) : Number.POSITIVE_INFINITY
+    const targetChunks = Number.isFinite(this.maxChunks) ? Math.max(1, Math.floor(this.maxChunks * ratio)) : Number.POSITIVE_INFINITY
+
+    while (this.chunks.size > targetChunks || this.bytes > targetBytes) {
+      const oldest = this._oldestEvictableIndex(null) ?? this._fallbackEvictIndex(null)
+      if (oldest == null) return this.getStats()
+      this._doEvict(oldest, false)
+    }
+
+    return this.getStats()
+  }
+
+  _doEvict(index, requestNow) {
+    const oldBuffer = this.chunks.get(index)
+    if (!oldBuffer) return
+    this._markPieceUnavailable(index, requestNow)
+    this.chunks.delete(index)
+    this._rememberEviction(index)
+    this.bytes -= oldBuffer.length
+    this.evictions += 1
   }
 
   _hasStaleVerifiedBit(index) {
@@ -292,7 +402,7 @@ export default class LruMemoryChunkStore {
   }
 
   _failPending(err) {
-    for (const [index, recovery] of this.pendingReads) {
+    for (const [index, recovery] of [...this.pendingReads]) {
       clearTimeout(recovery.timer)
       this.torrent?.removeListener?.('verified', recovery.listener)
       for (const pending of recovery.waits) {

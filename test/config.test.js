@@ -8,6 +8,7 @@ test('normalizes public URLs and strips trailing slash', () => {
   assert.equal(normalizePublicUrl(''), null)
   assert.throws(() => normalizePublicUrl('javascript:alert(1)'), /Unsupported public URL protocol/)
   assert.throws(() => normalizePublicUrl('data:text/html,hello'), /Unsupported public URL protocol/)
+  assert.throws(() => normalizePublicUrl('http://example.com:99999'), /Invalid URL|Unsupported public URL port/)
 })
 
 test('parses public server config from environment', () => {

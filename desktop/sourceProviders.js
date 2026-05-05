@@ -29,7 +29,7 @@ const OPEN_CATALOG = [
     description: 'Open movie from Blender Foundation.',
     language: 'en',
     quality: '1080p',
-    sizeBytes: 1_200_000_000,
+    sizeBytes: 0,
     seeders: 0,
     leechers: 0,
     posterUrl: 'https://archive.org/services/img/Sintel',
@@ -42,7 +42,7 @@ const OPEN_CATALOG = [
     description: 'Open animated short film from Blender Foundation.',
     language: 'en',
     quality: '1080p',
-    sizeBytes: 900_000_000,
+    sizeBytes: 0,
     seeders: 0,
     leechers: 0,
     posterUrl: 'https://archive.org/services/img/BigBuckBunny_328',
@@ -55,7 +55,7 @@ const OPEN_CATALOG = [
     description: 'Public-domain horror film hosted by Internet Archive.',
     language: 'en',
     quality: '720p',
-    sizeBytes: 750_000_000,
+    sizeBytes: 0,
     seeders: 0,
     leechers: 0,
     posterUrl: 'https://archive.org/services/img/night_of_the_living_dead',
@@ -178,11 +178,53 @@ function archiveSearchUrl(query, rows = 12) {
   return `https://archive.org/advancedsearch.php?${params}`
 }
 
-export async function searchArchiveOrg(query = '', filters = {}, fetchImpl = globalThis.fetch) {
+function timeoutSignal(timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || typeof AbortController !== 'function') return { signal: undefined, cancel: () => {} }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  timer.unref?.()
+  return { signal: controller.signal, cancel: () => clearTimeout(timer) }
+}
+
+async function fetchWithTimeout(fetchImpl, url, options = {}, timeoutMs = 15_000) {
+  const timeout = timeoutSignal(timeoutMs)
+  try {
+    return await fetchImpl(url, { ...options, signal: timeout.signal })
+  } finally {
+    timeout.cancel()
+  }
+}
+
+async function readResponseBodyLimited(response, maxBytes) {
+  const chunks = []
+  let received = 0
+
+  if (response.body?.getReader) {
+    const reader = response.body.getReader()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = Buffer.from(value)
+      received += chunk.length
+      if (received > maxBytes) {
+        try { await reader.cancel() } catch {}
+        throw new Error(`Torrent file is too large: ${received} bytes`)
+      }
+      chunks.push(chunk)
+    }
+    return Buffer.concat(chunks)
+  }
+
+  const arrayBuffer = await response.arrayBuffer()
+  if (arrayBuffer.byteLength > maxBytes) throw new Error(`Torrent file is too large: ${arrayBuffer.byteLength} bytes`)
+  return Buffer.from(arrayBuffer)
+}
+
+export async function searchArchiveOrg(query = '', filters = {}, fetchImpl = globalThis.fetch, { timeoutMs = 15_000 } = {}) {
   if (typeof fetchImpl !== 'function') return []
-  const response = await fetchImpl(archiveSearchUrl(query), {
+  const response = await fetchWithTimeout(fetchImpl, archiveSearchUrl(query), {
     headers: { 'User-Agent': 'Torrgether source search' }
-  })
+  }, timeoutMs)
   if (!response.ok) throw new Error(`Archive.org search returned HTTP ${response.status}`)
   const payload = await response.json()
   const docs = payload?.response?.docs || []
@@ -201,17 +243,17 @@ export async function searchArchiveOrg(query = '', filters = {}, fetchImpl = glo
     .filter(item => item && matchesLanguage(item, filters.language))
 }
 
-export async function searchSources(query = '', filters = {}, fetchImpl = globalThis.fetch) {
+export async function searchSources(query = '', filters = {}, fetchImpl = globalThis.fetch, options = {}) {
   const requestedLanguage = normalizeContentLanguage(filters.language)
   const local = searchOpenCatalog(query, filters)
-  const remoteResult = await searchArchiveOrg(query, filters, fetchImpl).catch(() => [])
+  const remoteResult = await searchArchiveOrg(query, filters, fetchImpl, options).catch(() => [])
   let results = dedupeSourceResults([...local, ...remoteResult])
   let languageFallback = false
 
   if (requestedLanguage !== DEFAULT_CONTENT_LANGUAGE && results.length === 0) {
     languageFallback = true
     const fallbackLocal = searchOpenCatalog(query, { ...filters, language: DEFAULT_CONTENT_LANGUAGE })
-    const fallbackRemote = await searchArchiveOrg(query, { ...filters, language: DEFAULT_CONTENT_LANGUAGE }, fetchImpl).catch(() => [])
+    const fallbackRemote = await searchArchiveOrg(query, { ...filters, language: DEFAULT_CONTENT_LANGUAGE }, fetchImpl, options).catch(() => [])
     results = dedupeSourceResults([...fallbackLocal, ...fallbackRemote])
   }
 
@@ -224,7 +266,7 @@ export async function searchSources(query = '', filters = {}, fetchImpl = global
   }
 }
 
-export async function fetchSourceTorrent(result, fetchImpl = globalThis.fetch, { maxBytes = 10 * 1024 * 1024 } = {}) {
+export async function fetchSourceTorrent(result, fetchImpl = globalThis.fetch, { maxBytes = 10 * 1024 * 1024, timeoutMs = 30_000 } = {}) {
   const normalized = normalizeSourceResult(result)
   if (!normalized) throw new Error('Invalid source result')
   if (normalized.magnetURI) return { kind: 'magnet', name: normalized.title, magnetURI: normalized.magnetURI }
@@ -233,17 +275,17 @@ export async function fetchSourceTorrent(result, fetchImpl = globalThis.fetch, {
   }
   if (!normalized.torrentUrl) throw new Error('This source result does not expose a torrent or magnet link')
   if (typeof fetchImpl !== 'function') throw new Error('fetch is not available')
-  const response = await fetchImpl(normalized.torrentUrl, {
+  const response = await fetchWithTimeout(fetchImpl, normalized.torrentUrl, {
     headers: { 'User-Agent': 'Torrgether torrent importer' }
-  })
+  }, timeoutMs)
   if (!response.ok) throw new Error(`Torrent download returned HTTP ${response.status}`)
-  const length = Number(response.headers?.get?.('content-length'))
+  const rawLength = response.headers?.get?.('content-length')
+  const length = rawLength == null || rawLength === '' ? null : Number(rawLength)
   if (Number.isFinite(length) && length > maxBytes) throw new Error(`Torrent file is too large: ${length} bytes`)
-  const arrayBuffer = await response.arrayBuffer()
-  if (arrayBuffer.byteLength > maxBytes) throw new Error(`Torrent file is too large: ${arrayBuffer.byteLength} bytes`)
+  const buffer = await readResponseBodyLimited(response, maxBytes)
   return {
     kind: 'torrent-file',
     name: `${normalized.title}.torrent`,
-    base64: Buffer.from(arrayBuffer).toString('base64')
+    base64: buffer.toString('base64')
   }
 }

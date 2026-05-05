@@ -1,4 +1,5 @@
 const nodeGlobals = {
+  AbortController: 'readonly',
   Buffer: 'readonly',
   clearInterval: 'readonly',
   clearTimeout: 'readonly',
@@ -6,6 +7,7 @@ const nodeGlobals = {
   fetch: 'readonly',
   process: 'readonly',
   queueMicrotask: 'readonly',
+  ReadableStream: 'readonly',
   setInterval: 'readonly',
   setTimeout: 'readonly',
   URL: 'readonly',
@@ -19,6 +21,7 @@ const browserGlobals = {
   navigator: 'readonly',
   requestAnimationFrame: 'readonly',
   ResizeObserver: 'readonly',
+  TextEncoder: 'readonly',
   window: 'readonly'
 }
 

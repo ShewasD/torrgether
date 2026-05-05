@@ -11,6 +11,12 @@ export function normalizePublicUrl(value) {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`Unsupported public URL protocol: ${url.protocol}`)
   }
+  if (url.port) {
+    const port = Number(url.port)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`Unsupported public URL port: ${url.port}`)
+    }
+  }
   url.pathname = url.pathname.replace(/\/+$/, '')
   return url.toString().replace(/\/$/, '')
 }

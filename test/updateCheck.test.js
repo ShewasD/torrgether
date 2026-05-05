@@ -6,10 +6,13 @@ test('compares semantic versions', () => {
   assert.equal(compareVersions('0.3.1', '0.3.0'), 1)
   assert.equal(compareVersions('v0.3.0', '0.3.0'), 0)
   assert.equal(compareVersions('0.2.9', '0.3.0'), -1)
+  assert.equal(compareVersions('not-a-version', '0.3.0'), null)
 })
 
 test('normalizes update repository and release assets', () => {
   assert.equal(normalizeUpdateRepo('https://github.com/ShewasD/torrgether'), 'ShewasD/torrgether')
+  assert.equal(normalizeUpdateRepo('https://github.com.evil.test/ShewasD/torrgether'), 'ShewasD/torrgether')
+  assert.equal(normalizeUpdateRepo('-bad/torrgether'), 'ShewasD/torrgether')
   const assets = selectReleaseAssets([
     { name: 'Torrgether-Setup-0.3.0.exe', browser_download_url: 'https://example.test/win.exe' },
     { name: 'Torrgether-0.3.0.AppImage', browser_download_url: 'https://example.test/appimage' },
@@ -36,6 +39,21 @@ test('update check reports latest release and preferred asset', async () => {
   const result = await checkForUpdates({ currentVersion: '0.3.0', fetchImpl, platform: 'win32' })
   assert.equal(result.updateAvailable, true)
   assert.equal(result.preferredAsset.name, 'Torrgether-Setup-0.3.1.exe')
+})
+
+test('update check reports malformed release versions', async () => {
+  const result = await checkForUpdates({
+    currentVersion: '0.4.0',
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ tag_name: 'release-latest', assets: [] })
+    })
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.updateAvailable, false)
+  assert.match(result.error, /Could not compare versions/)
 })
 
 test('update check handles repositories without releases', async () => {
