@@ -2,7 +2,7 @@
   "name": "torrgether",
   "version": "0.3.0",
   "description": "Legal co-watching desktop app with catalog browsing, update checks, MPV control, and RAM-only torrent streaming.",
-  "author": "Torrgether contributors",
+  "author": "ShewasD <130910070+ShewasD@users.noreply.github.com>",
   "private": true,
   "type": "module",
   "main": "desktop/main.js",
@@ -85,6 +85,7 @@
         }
       ],
       "category": "AudioVideo",
+      "maintainer": "ShewasD <130910070+ShewasD@users.noreply.github.com>",
       "artifactName": "${productName}-${version}.${ext}"
     },
     "deb": {
