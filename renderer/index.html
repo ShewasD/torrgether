@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src https: data:; connect-src 'self' ws: wss: http: https:; font-src 'self'; media-src 'self' blob:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src https: data:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss:; font-src 'self'; media-src 'self' blob: http://127.0.0.1:* http://localhost:*;">
   <title>Torrgether</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
@@ -11,14 +11,14 @@
   <main class="app-shell">
     <aside class="rail">
       <div class="brand-mark">
-        <div class="logo-shape">▶</div>
+        <div class="logo-shape">TG</div>
         <strong>Torrgether</strong>
       </div>
 
       <nav class="nav-list" aria-label="Primary">
-        <button class="nav-item active" type="button" data-i18n="nav.watch">Просмотр</button>
-        <button class="nav-item" type="button" data-i18n="nav.room">Room</button>
-        <button class="nav-item" type="button" data-i18n="nav.settings">Settings</button>
+        <button class="nav-item active" type="button" data-workspace="home" data-i18n="nav.home">Home</button>
+        <button class="nav-item" type="button" data-workspace="watch" data-i18n="nav.watch">Watch</button>
+        <button class="nav-item" type="button" data-workspace="settings" data-i18n="nav.settings">Settings</button>
       </nav>
 
       <section class="profile-strip">
@@ -28,148 +28,257 @@
     </aside>
 
     <section class="workspace">
-      <header class="topbar">
-        <div class="search-box">
-          <span aria-hidden="true">⌕</span>
-          <input id="sourceSearchInput" data-i18n-placeholder="search.placeholder" placeholder="Search movies, series, anime..." />
-          <button id="sourceSearchBtn" class="icon-button" type="button" data-i18n-title="buttons.search" title="Search">↵</button>
-        </div>
-        <div class="top-actions">
-          <div class="media-filter" role="group" aria-label="Catalog type">
-            <button class="media-filter-btn active" type="button" data-media-filter="all" data-i18n="catalog.all">Все</button>
-            <button class="media-filter-btn" type="button" data-media-filter="movie" data-i18n="nav.movies">Фильмы</button>
-            <button class="media-filter-btn" type="button" data-media-filter="series" data-i18n="nav.series">Сериалы</button>
-            <button class="media-filter-btn" type="button" data-media-filter="anime" data-i18n="nav.anime">Аниме</button>
-          </div>
-          <button id="themeToggleBtn" class="icon-button" type="button" data-i18n-title="theme.toggle" title="Toggle theme">☾</button>
-          <label class="visually-compact" for="languageSelect" data-i18n="labels.language">UI language</label>
-          <select id="languageSelect" class="compact-select">
-            <option value="en">English</option>
-            <option value="ru">Русский</option>
-            <option value="uk">Українська</option>
-            <option value="zh-CN">简体中文</option>
-            <option value="ja">日本語</option>
-            <option value="ko">한국어</option>
-            <option value="es">Español</option>
-            <option value="pt-BR">Português</option>
-            <option value="fr">Français</option>
-            <option value="de">Deutsch</option>
-            <option value="it">Italiano</option>
-            <option value="pl">Polski</option>
-            <option value="tr">Türkçe</option>
-            <option value="ar">العربية</option>
-            <option value="hi">हिन्दी</option>
-            <option value="id">Bahasa Indonesia</option>
-            <option value="vi">Tiếng Việt</option>
-          </select>
-          <label class="visually-compact" for="contentLanguageSelect" data-i18n="labels.audioLanguage">Audio language</label>
-          <select id="contentLanguageSelect" class="compact-select">
-            <option value="any">Any</option>
-            <option value="en">English</option>
-            <option value="ru">Русский</option>
-            <option value="uk">Українська</option>
-            <option value="zh">中文</option>
-            <option value="ja">日本語</option>
-            <option value="ko">한국어</option>
-            <option value="es">Español</option>
-            <option value="pt">Português</option>
-            <option value="fr">Français</option>
-            <option value="de">Deutsch</option>
-            <option value="it">Italiano</option>
-            <option value="pl">Polski</option>
-            <option value="tr">Türkçe</option>
-            <option value="ar">العربية</option>
-            <option value="hi">हिन्दी</option>
-            <option value="id">Bahasa Indonesia</option>
-            <option value="vi">Tiếng Việt</option>
-          </select>
+      <header class="topbar app-statusbar">
+        <div class="status-summary">
+          <span id="homeRoomStatus" class="pill neutral">No room</span>
+          <span id="homeRoleStatus" class="pill neutral">-</span>
           <span id="connectionStatus" class="pill danger" data-i18n="status.offline">offline</span>
           <span id="mpvPreflightStatus" class="pill warn" data-i18n="mpv.checking">mpv: checking</span>
+        </div>
+        <div class="top-actions">
+          <button id="themeToggleBtn" class="icon-button" type="button" data-i18n-title="theme.toggle" title="Toggle theme">T</button>
         </div>
       </header>
 
       <section id="updateBanner" class="update-banner hidden">
         <span id="updateText"></span>
         <button id="updateActionBtn" type="button" data-i18n="updates.open">Open release</button>
-        <button id="updateDismissBtn" class="icon-button" type="button" data-i18n-title="updates.dismiss" title="Dismiss">×</button>
+        <button id="updateDismissBtn" class="icon-button" type="button" data-i18n-title="updates.dismiss" title="Dismiss">x</button>
       </section>
 
-      <section id="watchWorkspace" class="workspace-tab">
-      <section class="watch-layout">
-        <section class="watch-main">
-          <section class="player-preview">
-            <video id="embeddedPlayer" class="embedded-player hidden" playsinline controls preload="metadata"></video>
-            <img id="detailBackdrop" alt="" src="https://archive.org/services/img/Sintel" />
-            <div class="player-shade"></div>
-            <div class="player-center-controls">
-              <button id="mpvBackBtn" class="round-control" disabled type="button" data-i18n-title="controls.back" title="-10 sec">↶</button>
-              <button id="mpvToggleBtn" class="play-control" disabled type="button" data-i18n-title="buttons.playPause" title="Play / Pause">▶</button>
-              <button id="mpvForwardBtn" class="round-control" disabled type="button" data-i18n-title="controls.forward" title="+10 sec">↷</button>
+      <section id="homeWorkspace" class="workspace-tab">
+        <div class="home-layout">
+          <section class="home-main">
+            <div class="screen-heading">
+              <p class="kicker" data-i18n="home.kicker">Start together</p>
+              <h1 data-i18n="home.title">Find something to watch</h1>
+              <p class="hero-copy" data-i18n="home.subtitle">Join a room, search the catalog, or import a torrent before opening the clean Watch screen.</p>
             </div>
-            <div class="player-bottom">
-              <span id="timeStatus">0.0</span>
-              <div class="timeline"><span id="progressBar"></span></div>
-              <span id="progressPercent">0%</span>
-              <button id="openMpvBtn" class="icon-button" disabled type="button" data-i18n-title="buttons.restartMpv" title="Open MPV">⛶</button>
-            </div>
-          </section>
 
-          <section class="title-block">
-            <div class="poster-chip">
-              <img id="detailPoster" alt="" src="https://archive.org/services/img/Sintel" />
-            </div>
-            <div class="title-copy">
-              <p class="kicker" id="appEyebrow">Torrgether</p>
-              <h1 id="detailTitle">Sintel</h1>
-              <p id="detailMeta" class="meta-line">2010 · movie · open catalog</p>
-              <p id="detailDescription" class="hero-copy">Open-license catalog results can be imported directly into the room and streamed through MPV from RAM.</p>
-              <div id="catalogBadges" class="badge-row"></div>
-              <div class="hero-actions">
-                <button id="detailImportBtn" class="primary" type="button" data-i18n="buttons.continue">Продолжить</button>
-                <button id="detailFavoriteBtn" type="button" data-i18n="buttons.favorite">В избранное</button>
-                <button id="mpvStopBtn" type="button" disabled data-i18n="buttons.stopMpv">Stop MPV</button>
+            <section class="search-panel">
+              <div class="search-box">
+                <span aria-hidden="true">Search</span>
+                <input id="sourceSearchInput" data-i18n-placeholder="search.placeholder" placeholder="Search movies, series, anime..." />
+                <button id="sourceSearchBtn" class="icon-button" type="button" data-i18n-title="buttons.search" title="Search">Go</button>
               </div>
-            </div>
-          </section>
-
-          <section class="section-line">
-            <h2 data-i18n="catalog.results">Каталог</h2>
-            <span id="sourceCount" class="linkish">0</span>
-          </section>
-          <p id="languageNotice" class="notice hidden"></p>
-          <div id="sourceResults" class="poster-row"></div>
-
-          <section class="section-line">
-            <h2 data-i18n="catalog.similar">Похожие</h2>
-          </section>
-          <div class="watch-row">
-            <article class="watch-card">
-              <strong id="videoTitle" data-i18n="player.noVideo">No video selected</strong>
-              <span id="mkvHint" data-i18n="player.chooseHint">Choose a catalog result, .torrent, or magnet.</span>
-            </article>
-            <article class="watch-card">
-              <strong data-i18n="stream.ramCache">RAM cache</strong>
-              <span id="bufferStatus">-</span>
-              <div class="mini-progress ram"><span id="ramBar"></span></div>
-            </article>
-          </div>
-        </section>
-
-        <aside class="side-panel">
-          <div class="tabbar wide">
-            <button id="rightTorrentsTab" class="tab active" type="button" data-panel-tab="torrents" data-i18n="catalog.torrents">Торренты</button>
-            <button id="rightInfoTab" class="tab" type="button" data-panel-tab="info" data-i18n="catalog.info">Информация</button>
-          </div>
-
-          <section id="rightTorrentsPanel" class="panel-section">
-            <div id="torrentList" class="torrent-list"></div>
-            <section id="hostControls" class="manual-controls hidden">
-              <button id="chooseTorrentBtn" data-i18n="buttons.chooseTorrent">Choose .torrent</button>
-              <div class="inline-load">
-                <input id="magnetInput" data-i18n-placeholder="sources.magnetPlaceholder" placeholder="or paste magnet URI" />
-                <button id="setMagnetBtn" data-i18n="buttons.load">Load</button>
+              <div class="media-filter" role="group" aria-label="Catalog type">
+                <button class="media-filter-btn active" type="button" data-media-filter="all" data-i18n="catalog.all">All</button>
+                <button class="media-filter-btn" type="button" data-media-filter="movie" data-i18n="nav.movies">Movies</button>
+                <button class="media-filter-btn" type="button" data-media-filter="series" data-i18n="nav.series">Series</button>
+                <button class="media-filter-btn" type="button" data-media-filter="anime" data-i18n="nav.anime">Anime</button>
               </div>
             </section>
+
+            <section class="selected-media">
+              <div class="poster-chip">
+                <img id="detailPoster" alt="" src="https://archive.org/services/img/Sintel" />
+              </div>
+              <div class="title-copy">
+                <p class="kicker" id="appEyebrow">Torrgether</p>
+                <h2 id="detailTitle">Torrgether</h2>
+                <p id="detailMeta" class="meta-line">RAM-only streaming</p>
+                <p id="detailDescription" class="hero-copy">Synchronized legal torrent playback with MPV and RAM-only streaming.</p>
+                <div id="catalogBadges" class="badge-row"></div>
+                <div class="hero-actions">
+                  <button id="detailImportBtn" class="primary" type="button" data-i18n="buttons.import">Import</button>
+                  <button id="detailFavoriteBtn" type="button" data-i18n="buttons.favorite">Favorite</button>
+                </div>
+              </div>
+              <img id="detailBackdrop" class="detail-backdrop-source" alt="" src="https://archive.org/services/img/Sintel" />
+            </section>
+
+            <section class="section-line">
+              <h2 data-i18n="catalog.results">Catalog</h2>
+              <span id="sourceCount" class="linkish">0</span>
+            </section>
+            <p id="languageNotice" class="notice hidden"></p>
+            <div id="sourceResults" class="poster-row"></div>
+          </section>
+
+          <aside class="side-panel home-panel">
+            <section class="panel-section">
+              <h2 data-i18n="home.roomTitle">Room</h2>
+              <p class="muted small" data-i18n="home.roomSubtitle">Create or join a room before importing media.</p>
+              <label for="roomId" data-i18n="room.room">Room</label>
+              <input id="roomId" value="demo-room" />
+              <label for="displayName" data-i18n="room.name">Name</label>
+              <input id="displayName" value="Viewer" data-i18n-value="room.defaultName" />
+              <button id="joinBtn" class="primary full" data-i18n="buttons.join">Join</button>
+            </section>
+
+            <section class="panel-section">
+              <h2 data-i18n="home.importTitle">Import source</h2>
+              <div id="torrentList" class="torrent-list"></div>
+              <p class="muted small" data-i18n="home.importHint">Catalog imports appear here. Manual torrent import is also available on Watch.</p>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <section id="watchWorkspace" class="workspace-tab hidden">
+        <section class="watch-layout clean-watch">
+          <section class="watch-main">
+            <header class="watch-status-strip">
+              <div>
+                <p class="kicker" data-i18n="watch.kicker">Watch room</p>
+                <h1 data-i18n="watch.title">Playback</h1>
+              </div>
+              <div class="watch-pills">
+                <span id="watchRoomStatus" class="pill neutral">No room</span>
+                <span id="watchRoleStatus" class="pill neutral">-</span>
+                <span id="watchConnectionStatus" class="pill danger">offline</span>
+                <span id="watchMembersCount" class="pill neutral">0 members</span>
+              </div>
+            </header>
+
+            <section class="player-preview">
+              <video id="embeddedPlayer" class="embedded-player hidden" playsinline controls preload="metadata"></video>
+              <div class="player-empty-frame">
+                <span class="player-logo">Torrgether</span>
+              </div>
+              <div class="player-shade"></div>
+              <div class="player-state-overlay">
+                <strong id="watchPlaybackStatus" data-i18n="watch.emptyState">Choose a torrent to start watching.</strong>
+                <span id="watchPlayerStatus" data-i18n="watch.playerIdle">Player idle</span>
+              </div>
+              <div class="player-center-controls">
+                <button id="mpvBackBtn" class="round-control" disabled type="button" data-i18n-title="controls.back" title="-10 sec">-10</button>
+                <button id="mpvToggleBtn" class="play-control" disabled type="button" data-i18n-title="buttons.playPause" title="Play / Pause">Play</button>
+                <button id="mpvForwardBtn" class="round-control" disabled type="button" data-i18n-title="controls.forward" title="+10 sec">+10</button>
+              </div>
+              <div class="player-bottom">
+                <span id="timeStatus">0.0</span>
+                <div class="timeline"><span id="progressBar"></span></div>
+                <span id="progressPercent">0%</span>
+                <button id="openMpvBtn" class="icon-button" disabled type="button" data-i18n-title="buttons.restartMpv" title="Open MPV">MPV</button>
+              </div>
+            </section>
+
+            <div class="watch-row">
+              <article class="watch-card selected-file-card">
+                <span class="card-label" data-i18n="watch.selectedFile">Selected file</span>
+                <strong id="videoTitle" data-i18n="player.noVideo">No video selected</strong>
+                <span id="mkvHint" data-i18n="player.chooseHint">Choose a catalog result, .torrent, or magnet.</span>
+              </article>
+              <article class="watch-card">
+                <span class="card-label" data-i18n="watch.buffering">Playback state</span>
+                <strong id="bufferStatus" data-i18n="watch.emptyState">Choose a torrent to start watching.</strong>
+                <div class="mini-progress ram"><span id="ramBar"></span></div>
+              </article>
+            </div>
+          </section>
+
+          <aside class="side-panel watch-control-panel">
+            <section class="panel-section">
+              <h2 data-i18n="watch.importTitle">Torrent import</h2>
+              <p class="muted small" data-i18n="watch.importSubtitle">Host chooses the torrent and selected video for the room.</p>
+              <section id="hostControls" class="manual-controls hidden">
+                <button id="chooseTorrentBtn" data-i18n="buttons.chooseTorrent">Choose .torrent</button>
+                <div class="inline-load">
+                  <input id="magnetInput" data-i18n-placeholder="sources.magnetPlaceholder" placeholder="or paste magnet URI" />
+                  <button id="setMagnetBtn" data-i18n="buttons.load">Load</button>
+                </div>
+              </section>
+              <p class="muted small" data-i18n="watch.clientImportHint">Clients receive the host selection automatically.</p>
+            </section>
+
+            <section class="panel-section">
+              <h2 data-i18n="stream.file">Files</h2>
+              <label for="fileSelect" data-i18n="sources.videoInside">Video inside torrent</label>
+              <select id="fileSelect" disabled></select>
+            </section>
+
+            <section class="panel-section">
+              <h2 data-i18n="participants.title">Participants</h2>
+              <ul id="members" class="members"></ul>
+            </section>
+
+            <section class="panel-section compact-actions">
+              <h2 data-i18n="player.title">Player</h2>
+              <button id="mpvStopBtn" type="button" disabled data-i18n="buttons.stopMpv">Stop MPV</button>
+            </section>
+          </aside>
+        </section>
+      </section>
+
+      <section id="settingsWorkspace" class="workspace-tab hidden">
+        <div class="settings-layout">
+          <section class="panel-section">
+            <h2 data-i18n="settings.general">General</h2>
+            <label class="visually-compact" for="languageSelect" data-i18n="labels.language">UI language</label>
+            <select id="languageSelect" class="compact-select">
+              <option value="en">English</option>
+              <option value="ru">Russian</option>
+              <option value="uk">Ukrainian</option>
+              <option value="zh-CN">Chinese</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="es">Spanish</option>
+              <option value="pt-BR">Portuguese</option>
+              <option value="fr">French</option>
+              <option value="de">Deutsch</option>
+              <option value="it">Italiano</option>
+              <option value="pl">Polski</option>
+              <option value="tr">Turkish</option>
+              <option value="ar">Arabic</option>
+              <option value="hi">Hindi</option>
+              <option value="id">Bahasa Indonesia</option>
+              <option value="vi">Vietnamese</option>
+            </select>
+            <label class="visually-compact" for="contentLanguageSelect" data-i18n="labels.audioLanguage">Audio language</label>
+            <select id="contentLanguageSelect" class="compact-select">
+              <option value="any">Any</option>
+              <option value="en">English</option>
+              <option value="ru">Russian</option>
+              <option value="uk">Ukrainian</option>
+              <option value="zh">Chinese</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="es">Spanish</option>
+              <option value="pt">Portuguese</option>
+              <option value="fr">French</option>
+              <option value="de">Deutsch</option>
+              <option value="it">Italiano</option>
+              <option value="pl">Polski</option>
+              <option value="tr">Turkish</option>
+              <option value="ar">Arabic</option>
+              <option value="hi">Hindi</option>
+              <option value="id">Bahasa Indonesia</option>
+              <option value="vi">Vietnamese</option>
+            </select>
+          </section>
+
+          <section class="panel-section">
+            <h2 data-i18n="settings.room">Room and server</h2>
+            <label for="serverUrl" data-i18n="room.signalingUrl">Signaling URL</label>
+            <input id="serverUrl" value="http://localhost:3000" />
+            <label for="serverToken" data-i18n="room.serverToken">Server token</label>
+            <input id="serverToken" type="password" autocomplete="off" data-i18n-placeholder="room.optional" placeholder="optional" />
+          </section>
+
+          <section class="panel-section">
+            <h2 data-i18n="player.title">Player</h2>
+            <span id="mpvStatus" class="pill" data-i18n="mpv.notStarted">not started</span>
+            <p class="muted small" data-i18n="player.advancedHint">Advanced controls and diagnostics are managed here.</p>
+            <button id="showMpvLogsBtn" type="button" data-i18n="buttons.showLog">Show log</button>
+          </section>
+
+          <section class="panel-section">
+            <h2 data-i18n="diagnostics.title">Diagnostics</h2>
+            <div class="stats-grid">
+              <div><span data-i18n="stream.peers">Peers</span><b id="peerStatus">-</b></div>
+              <div><span data-i18n="stream.speed">Speed</span><b id="speedStatus">-</b></div>
+              <div><span data-i18n="status.seq">seq:</span><b id="seqStatus">0</b></div>
+              <div><span data-i18n="stream.cachePressure">Pressure</span><b id="cachePressureStatus">-</b></div>
+              <div><span data-i18n="stream.ramCache">RAM cache</span><b id="ramShortStatus">-</b></div>
+              <div><span data-i18n="stream.evictions">Evictions</span><b id="evictionStatus">0</b></div>
+              <div><span data-i18n="stream.refetch">Refetch</span><b id="refetchStatus">0</b></div>
+              <div><span data-i18n="stream.pending">Pending</span><b id="pendingStatus">0</b></div>
+            </div>
+          </section>
+
+          <section class="panel-section full advanced-import-section">
+            <h2 data-i18n="settings.advancedImport">Advanced import</h2>
             <div class="rutracker-toolbar">
               <button id="rutrackerOpenBtn" class="primary" type="button" data-i18n="buttons.rutrackerOpen">Open RuTracker</button>
               <button id="rutrackerBackBtn" type="button" data-i18n="buttons.rutrackerBack">Back</button>
@@ -183,81 +292,22 @@
             </div>
           </section>
 
-          <section id="rightInfoPanel" class="panel-section hidden">
-            <section class="stats-grid">
-              <div><span data-i18n="stream.peers">Peers</span><b id="peerStatus">-</b></div>
-              <div><span data-i18n="stream.speed">Speed</span><b id="speedStatus">-</b></div>
-              <div><span data-i18n="status.seq">seq:</span><b id="seqStatus">0</b></div>
-              <div><span data-i18n="stream.cachePressure">Pressure</span><b id="cachePressureStatus">-</b></div>
-            </section>
+          <section class="panel-section full developer-section">
+            <h2 data-i18n="settings.developer">Developer and logs</h2>
+            <details class="debug-box">
+              <summary data-i18n="diagnostics.summary">MPV diagnostics</summary>
+              <p class="muted small"><span data-i18n="diagnostics.log">Log:</span> <code id="mpvLogPath" data-i18n="diagnostics.memory">current session memory</code></p>
+              <button id="openLogsFolderBtn" data-i18n="buttons.openLogs">Open logs</button>
+              <pre id="mpvLog" class="mpv-log"></pre>
+            </details>
+            <details class="debug-box">
+              <summary data-i18n="events.title">Events</summary>
+              <pre id="log" class="app-log"></pre>
+            </details>
           </section>
-
-          <section class="panel-section">
-            <h2 data-i18n="stream.file">Files</h2>
-            <label for="fileSelect" data-i18n="sources.videoInside">Video inside torrent</label>
-            <select id="fileSelect" disabled></select>
-          </section>
-        </aside>
+        </div>
       </section>
-      </section>
-
-    <section id="roomWorkspace" class="workspace-tab hidden">
-      <div class="room-layout">
-        <section class="room-box">
-          <h2 data-i18n="room.title">Room</h2>
-          <label for="serverUrl" data-i18n="room.signalingUrl">Signaling URL</label>
-          <input id="serverUrl" value="http://localhost:3000" />
-          <label for="serverToken" data-i18n="room.serverToken">Server token</label>
-          <input id="serverToken" type="password" autocomplete="off" data-i18n-placeholder="room.optional" placeholder="optional" />
-          <div class="two-col">
-            <div>
-              <label for="roomId" data-i18n="room.room">Room</label>
-              <input id="roomId" value="demo-room" />
-            </div>
-            <div>
-              <label for="displayName" data-i18n="room.name">Name</label>
-              <input id="displayName" value="Viewer" data-i18n-value="room.defaultName" />
-            </div>
-          </div>
-          <button id="joinBtn" class="primary full" data-i18n="buttons.join">Join</button>
-        </section>
-        <section class="panel-section">
-          <h2 data-i18n="participants.title">Participants</h2>
-          <ul id="members" class="members"></ul>
-        </section>
-      </div>
     </section>
-
-    <section id="settingsWorkspace" class="workspace-tab hidden">
-      <div class="settings-layout">
-        <section class="panel-section">
-          <h2 data-i18n="player.title">Player</h2>
-          <span id="mpvStatus" class="pill" data-i18n="mpv.notStarted">not started</span>
-          <p class="muted small" data-i18n="player.advancedHint">Advanced controls (quality, subtitles, speed) are managed in MPV.</p>
-          <button id="showMpvLogsBtn" type="button" data-i18n="buttons.showLog">Show log</button>
-        </section>
-        <section class="panel-section">
-          <h2 data-i18n="diagnostics.title">Diagnostics</h2>
-          <details class="debug-box">
-            <summary data-i18n="diagnostics.summary">MPV diagnostics</summary>
-            <p class="muted small"><span data-i18n="diagnostics.log">Log:</span> <code id="mpvLogPath" data-i18n="diagnostics.memory">current session memory</code></p>
-            <button id="openLogsFolderBtn" data-i18n="buttons.openLogs">Open logs</button>
-            <pre id="mpvLog" class="mpv-log"></pre>
-          </details>
-        </section>
-        <section class="panel-section">
-          <h2 data-i18n="events.title">Events</h2>
-          <pre id="log" class="app-log"></pre>
-        </section>
-      </div>
-    </section>
-
-    </section>
-
-    <span id="ramShortStatus" class="hidden">-</span>
-    <span id="evictionStatus" class="hidden">0</span>
-    <span id="refetchStatus" class="hidden">0</span>
-    <span id="pendingStatus" class="hidden">0</span>
   </main>
 
   <script type="module" src="./renderer.js"></script>

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { dedupeSourceResults, fetchSourceTorrent, normalizeContentLanguage, searchSources } from '../desktop/sourceProviders.js'
+import { dedupeSourceResults, fetchSourceTorrent, normalizeContentLanguage, searchSources, validateTorrentUrl } from '../desktop/sourceProviders.js'
 
 test('deduplicates source results by info hash and keeps variants', () => {
   const results = dedupeSourceResults([
@@ -58,6 +58,22 @@ test('fetchSourceTorrent enforces streamed size limits', async () => {
   await assert.rejects(
     () => fetchSourceTorrent({ title: 'Demo', torrentUrl: 'https://example.test/demo.torrent' }, async () => response, { maxBytes: 3 }),
     /too large/
+  )
+})
+
+test('fetchSourceTorrent blocks non-HTTPS and local network torrent URLs', async () => {
+  assert.equal(validateTorrentUrl('https://archive.org/download/demo/demo_archive.torrent'), 'https://archive.org/download/demo/demo_archive.torrent')
+  assert.throws(() => validateTorrentUrl('http://archive.org/download/demo/demo_archive.torrent'), /HTTPS/)
+  assert.throws(() => validateTorrentUrl('https://localhost/demo.torrent'), /not allowed/)
+  assert.throws(() => validateTorrentUrl('https://127.0.0.1/demo.torrent'), /not allowed/)
+  assert.throws(() => validateTorrentUrl('https://192.168.1.2/demo.torrent'), /not allowed/)
+  assert.throws(() => validateTorrentUrl('https://user:pass@example.test/demo.torrent'), /credentials/)
+
+  await assert.rejects(
+    () => fetchSourceTorrent({ title: 'Demo', torrentUrl: 'http://archive.org/demo.torrent' }, async () => {
+      throw new Error('fetch should not run')
+    }),
+    /HTTPS/
   )
 })
 

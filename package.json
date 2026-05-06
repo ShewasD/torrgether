@@ -1,6 +1,6 @@
 {
   "name": "torrgether",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Legal co-watching desktop app with catalog browsing, update checks, MPV control, and RAM-only torrent streaming.",
   "author": "ShewasD <130910070+ShewasD@users.noreply.github.com>",
   "private": true,
@@ -14,6 +14,7 @@
     "check": "node --check server/server.js && node --check desktop/main.js && node --check desktop/preload.cjs && node --check desktop/sourceProviders.js && node --check desktop/updateCheck.js && node --check renderer/renderer.js",
     "lint": "eslint .",
     "test": "node --test",
+    "build": "npm run pack",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win nsis --publish never",

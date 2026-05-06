@@ -63,6 +63,11 @@ install_portable_node() {
   rm -rf "$tmp"
   mkdir -p "$tmp"
 
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    echo "sha256sum is required to verify the portable Node download." >&2
+    exit 1
+  fi
+
   download "$NODE_BASE_URL/SHASUMS256.txt" "$tmp/SHASUMS256.txt"
   node_version_no_v="${NODE_VERSION#v}"
   entry="$(grep -E "node-v${node_version_no_v}-${node_platform}\.tar\.xz$" "$tmp/SHASUMS256.txt" | head -n 1 || true)"

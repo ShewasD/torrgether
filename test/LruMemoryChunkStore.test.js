@@ -1,19 +1,20 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import EventEmitter from 'node:events'
+import fs from 'node:fs/promises'
 import LruMemoryChunkStore from '../desktop/LruMemoryChunkStore.js'
 
 class FakeTorrent extends EventEmitter {
-  constructor() {
+  constructor({ autoRescan = true } = {}) {
     super()
     this.destroyed = false
     this.bits = new Set()
-    this.unverified = []
     this.selections = []
     this.criticalPieces = []
-    this.selectionUpdates = 0
-    this.wireUpdates = 0
-    this._reservations = []
+    this.rescans = 0
+    this.rescanCallbacks = []
+    this.listenerCountsAtRescan = []
+    this.autoRescan = autoRescan
     this.bitfield = {
       get: index => this.bits.has(index),
       set: (index, value) => {
@@ -21,11 +22,6 @@ class FakeTorrent extends EventEmitter {
         else this.bits.delete(index)
       }
     }
-  }
-
-  _markUnverified(index) {
-    this.unverified.push(index)
-    this.bitfield.set(index, false)
   }
 
   select(start, end, priority) {
@@ -36,36 +32,19 @@ class FakeTorrent extends EventEmitter {
     this.criticalPieces.push({ start, end })
   }
 
-  _updateSelections() {
-    this.selectionUpdates += 1
+  rescanFiles(cb) {
+    this.rescans += 1
+    this.listenerCountsAtRescan.push(this.listenerCount('verified'))
+    this.rescanCallbacks.push(cb)
+    if (this.autoRescan) queueMicrotask(() => this.finishRescan())
   }
 
-  _update() {
-    this.wireUpdates += 1
-  }
-}
-
-class CountingLruMemoryChunkStore extends LruMemoryChunkStore {
-  constructor(...args) {
-    super(...args)
-    this.ensureReserveCalls = []
-  }
-
-  _ensurePieceCanBeReserved(index) {
-    this.ensureReserveCalls.push(index)
-    return super._ensurePieceCanBeReserved(index)
-  }
-}
-
-class OrderingTorrent extends FakeTorrent {
-  constructor() {
-    super()
-    this.listenerCountsAtUnverify = []
-  }
-
-  _markUnverified(index) {
-    this.listenerCountsAtUnverify.push(this.listenerCount('verified'))
-    super._markUnverified(index)
+  finishRescan(err = null) {
+    const callbacks = this.rescanCallbacks.splice(0)
+    if (!err) {
+      for (const index of [...this.bits]) this.bitfield.set(index, false)
+    }
+    for (const cb of callbacks) cb(err)
   }
 }
 
@@ -81,6 +60,17 @@ function get(store, index, opts) {
   })
 }
 
+function tick() {
+  return new Promise(resolve => setTimeout(resolve, 0))
+}
+
+test('RAM store source avoids WebTorrent private recovery APIs', async () => {
+  const source = await fs.readFile(new URL('../desktop/LruMemoryChunkStore.js', import.meta.url), 'utf8')
+  assert.equal(source.includes('_markUnverified'), false)
+  assert.equal(source.includes('_reservations'), false)
+  assert.match(source, /rescanFiles/)
+})
+
 test('stores and reads full and partial chunks from RAM', async () => {
   const store = new LruMemoryChunkStore(8, { maxBytes: 64 })
 
@@ -92,12 +82,11 @@ test('stores and reads full and partial chunks from RAM', async () => {
   assert.equal(store.chunks.size, 1)
 })
 
-test('eviction marks the removed verified piece as unavailable in WebTorrent', async () => {
+test('eviction records removed pieces without touching WebTorrent internals', async () => {
   const torrent = new FakeTorrent()
   const store = new LruMemoryChunkStore(4, { torrent, maxBytes: 8, maxChunks: 2 })
 
   torrent.bitfield.set(0, true)
-  torrent._reservations[0] = null
   await put(store, 0, 'aaaa')
   torrent.bitfield.set(1, true)
   await put(store, 1, 'bbbb')
@@ -107,40 +96,36 @@ test('eviction marks the removed verified piece as unavailable in WebTorrent', a
   assert.equal(store.evictions, 2)
   assert.equal(store.bytes, 4)
   assert.equal(store.chunks.has(0), false)
-  assert.deepEqual(torrent.unverified, [0, 1])
-  assert.equal(torrent.bitfield.get(0), false)
-  assert.deepEqual(torrent._reservations[0], [])
-  assert.equal(torrent.selectionUpdates > 0, true)
+  assert.equal(torrent.bitfield.get(0), true)
+  assert.equal(torrent.rescans, 0)
+  assert.deepEqual(torrent.selections, [])
 })
 
-test('eviction repairs reservations once per removed piece', async () => {
-  const torrent = new FakeTorrent()
-  const store = new CountingLruMemoryChunkStore(4, { torrent, maxBytes: 4, maxChunks: 1 })
+test('reads refresh LRU recency before eviction', async () => {
+  const store = new LruMemoryChunkStore(4, { maxBytes: 8, maxChunks: 2, lowWatermarkRatio: 1 })
 
-  torrent.bitfield.set(0, true)
-  torrent._reservations[0] = null
   await put(store, 0, 'aaaa')
-  torrent.bitfield.set(1, true)
   await put(store, 1, 'bbbb')
+  assert.equal((await get(store, 0)).toString(), 'aaaa')
+  await put(store, 2, 'cccc')
 
-  assert.equal(store.evictions, 1)
-  assert.deepEqual(store.ensureReserveCalls, [0])
-  assert.deepEqual(torrent._reservations[0], [])
+  assert.equal(store.chunks.has(0), true)
+  assert.equal(store.chunks.has(1), false)
+  assert.equal(store.chunks.has(2), true)
 })
 
-test('stale bitfield read waits for the piece to be verified again', async () => {
+test('stale bitfield read rescans and waits for the piece to be verified again', async () => {
   const torrent = new FakeTorrent()
   const store = new LruMemoryChunkStore(4, { torrent, maxBytes: 16, getTimeoutMs: 200 })
 
   torrent.bitfield.set(5, true)
-  torrent._reservations[5] = null
   const pending = get(store, 5)
+  await tick()
 
   assert.equal(store.staleMisses, 1)
   assert.equal(store.pendingReadCount, 1)
+  assert.equal(torrent.rescans, 1)
   assert.equal(torrent.bitfield.get(5), false)
-  assert.deepEqual(torrent._reservations[5], [])
-  assert.deepEqual(torrent.unverified, [5])
   assert.deepEqual(torrent.selections, [{ start: 5, end: 5, priority: 2 }])
   assert.deepEqual(torrent.criticalPieces, [{ start: 5, end: 5 }])
 
@@ -153,14 +138,15 @@ test('stale bitfield read waits for the piece to be verified again', async () =>
   assert.equal(store.pendingReadCount, 0)
 })
 
-test('registers stale recovery listener before requesting the piece again', async () => {
-  const torrent = new OrderingTorrent()
+test('registers stale recovery listener before rescanning pieces', async () => {
+  const torrent = new FakeTorrent()
   const store = new LruMemoryChunkStore(4, { torrent, maxBytes: 16, getTimeoutMs: 200 })
 
   torrent.bitfield.set(3, true)
   const pending = get(store, 3)
+  await tick()
 
-  assert.deepEqual(torrent.listenerCountsAtUnverify, [1])
+  assert.deepEqual(torrent.listenerCountsAtRescan, [1])
   assert.equal(torrent.listenerCount('verified'), 1)
 
   store.close()
@@ -174,10 +160,12 @@ test('coalesces pending stale reads by chunk index', async () => {
   torrent.bitfield.set(7, true)
   const full = get(store, 7)
   const partial = get(store, 7, { offset: 2, length: 3 })
+  await tick()
 
   assert.equal(store.pendingReads.size, 1)
   assert.equal(store.pendingReadCount, 2)
   assert.equal(torrent.listenerCount('verified'), 1)
+  assert.equal(torrent.rescans, 1)
   assert.deepEqual(torrent.selections, [{ start: 7, end: 7, priority: 2 }])
 
   await put(store, 7, 'abcdefgh')
@@ -191,6 +179,30 @@ test('coalesces pending stale reads by chunk index', async () => {
   assert.equal(torrent.listenerCount('verified'), 0)
 })
 
+test('coalesces concurrent stale misses behind one WebTorrent rescan', async () => {
+  const torrent = new FakeTorrent({ autoRescan: false })
+  const store = new LruMemoryChunkStore(4, { torrent, maxBytes: 16, getTimeoutMs: 200 })
+
+  torrent.bitfield.set(1, true)
+  torrent.bitfield.set(2, true)
+  const first = get(store, 1, { offset: 0, length: 4 })
+  const second = get(store, 2, { offset: 0, length: 4 })
+
+  assert.equal(torrent.rescans, 1)
+  assert.equal(store.pendingReadCount, 2)
+  torrent.finishRescan()
+  await tick()
+
+  assert.deepEqual(torrent.selections, [
+    { start: 1, end: 1, priority: 2 },
+    { start: 2, end: 2, priority: 2 }
+  ])
+
+  store.close()
+  await assert.rejects(first, /Store is closed/)
+  await assert.rejects(second, /Store is closed/)
+})
+
 test('bounds total pending stale reads', async () => {
   const torrent = new FakeTorrent()
   const store = new LruMemoryChunkStore(4, { torrent, maxBytes: 16, getTimeoutMs: 200, maxPendingReads: 1 })
@@ -200,7 +212,7 @@ test('bounds total pending stale reads', async () => {
   const first = get(store, 1)
 
   await assert.rejects(
-    get(store, 2),
+    get(store, 2, { offset: 0, length: 4 }),
     /Too many pending RAM reads/
   )
 
@@ -302,7 +314,8 @@ test('eviction clears down to the configured low watermark', async () => {
   const stats = store.getStats()
   assert.equal(stats.lowWatermarkBytes, 50)
   assert.equal(store.bytes, 40)
-  assert.deepEqual(torrent.unverified, [0, 1])
+  assert.equal(store.getStats().recentEvictions, 2)
+  assert.equal(torrent.rescans, 0)
   assert.equal(store.chunks.has(2), true)
 })
 
@@ -321,12 +334,14 @@ test('recently evicted missing chunks wait for reverify instead of ending the st
     await put(store, index, String(index).repeat(4))
   }
 
-  assert.equal(torrent.bitfield.get(0), false)
+  assert.equal(torrent.bitfield.get(0), true)
   assert.equal(store.getStats().recentEvictions, 2)
 
   const pending = get(store, 0)
+  await tick()
 
   assert.equal(store.pendingReadCount, 1)
+  assert.equal(torrent.rescans, 1)
   assert.deepEqual(torrent.selections.at(-1), { start: 0, end: 0, priority: 2 })
   assert.deepEqual(torrent.criticalPieces.at(-1), { start: 0, end: 0 })
 
@@ -408,8 +423,9 @@ test('forceEvictTo returns pressure stats and refetches evicted pieces with prio
   assert.equal(stats.bytes <= 8, true)
   assert.equal(store.evictions > 0, true)
 
-  const evicted = torrent.unverified[0]
+  const evicted = [...store.recentEvictions.keys()][0]
   const pending = get(store, evicted)
+  await tick()
   assert.deepEqual(torrent.selections.at(-1), { start: evicted, end: evicted, priority: 2 })
   assert.deepEqual(torrent.criticalPieces.at(-1), { start: evicted, end: evicted })
   store.close()

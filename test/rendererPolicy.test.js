@@ -32,5 +32,44 @@ test('renderer avoids stale catalog and torrent payload hazards', async () => {
   assert.equal(renderer.includes('payload.selectedFileIndex ='), false)
   assert.match(renderer, /sourceSearchGeneration/)
   assert.match(renderer, /safePosterUrl/)
+  assert.match(renderer, /emitTorrentPayloadGet/)
   assert.equal(renderer.includes('renderSelectedSource(results[0])'), false)
+})
+
+test('renderer throttles playback sync and deduplicates joins', async () => {
+  const renderer = await fs.readFile(new URL('../renderer/renderer.js', import.meta.url), 'utf8')
+
+  assert.match(renderer, /function playbackDriftThreshold/)
+  assert.match(renderer, /source === 'snapshot'\) return 4\.0/)
+  assert.match(renderer, /roomState\?\.reason === 'heartbeat'\) return 2\.0/)
+  assert.match(renderer, /isDuplicatePlaybackState/)
+  assert.match(renderer, /joinInFlight/)
+  assert.match(renderer, /activeRoomKey/)
+  assert.match(renderer, /applyPlayback\(snapshot\.state, \{ source: 'snapshot' \}\)/)
+})
+
+test('renderer HTML keeps diagnostics out of Watch and avoids duplicate IDs', async () => {
+  const html = await fs.readFile(new URL('../renderer/index.html', import.meta.url), 'utf8')
+  const renderer = await fs.readFile(new URL('../renderer/renderer.js', import.meta.url), 'utf8')
+  const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map(match => match[1])
+  assert.equal(ids.length, new Set(ids).size)
+  assert.match(html, /id="homeWorkspace"/)
+  assert.match(html, /id="watchWorkspace"/)
+  assert.match(html, /id="settingsWorkspace"[\s\S]*id="log"/)
+  const watchMarkup = html.match(/id="watchWorkspace"[\s\S]*id="settingsWorkspace"/)?.[0] || ''
+  assert.match(watchMarkup, /id="embeddedPlayer"/)
+  assert.match(watchMarkup, /id="hostControls"/)
+  assert.doesNotMatch(watchMarkup, /id="log"|id="mpvLog"|stats-grid|rutrackerViewport|serverUrl|serverToken/)
+  assert.doesNotMatch(renderer, /catalogSourceTab|manualSourceTab|rutrackerSourceTab|rightTorrentsPanel|rightMembersPanel/)
+  assert.doesNotMatch(html, /<\/main>\s*<\/section>/)
+})
+
+test('preload exposes only named socket commands and whitelisted subscriptions', async () => {
+  const preload = await fs.readFile(new URL('../desktop/preload.cjs', import.meta.url), 'utf8')
+  assert.match(preload, /ALLOWED_RENDERER_SOCKET_EVENTS/)
+  assert.match(preload, /emitTorrentPayloadGet/)
+  assert.equal(preload.includes('socketEmit(event'), false)
+  assert.equal(preload.includes('_socketEmitAck(event'), false)
+  assert.equal(preload.includes('socket.removeAllListeners()'), false)
+  assert.match(preload, /internalSocketHandlers/)
 })

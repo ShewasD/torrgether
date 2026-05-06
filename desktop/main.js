@@ -8,6 +8,7 @@ import { randomBytes } from 'crypto'
 import { spawn, execFile } from 'child_process'
 import { promisify } from 'util'
 import WebTorrent from 'webtorrent'
+import { io } from 'socket.io-client'
 import LruMemoryChunkStore from './LruMemoryChunkStore.js'
 import { parseMpvStdoutStatus } from './mpvOutput.js'
 import { getMpvCandidates } from './mpvPaths.js'
@@ -24,6 +25,7 @@ import {
   isMagnetUrl,
   isRutrackerTopLevelUrl,
   isTorrentDownload,
+  toSafeUrl,
   validateTorrentDownloadSize
 } from './rutracker.js'
 
@@ -64,15 +66,20 @@ let rutrackerSession = null
 let rutrackerVisible = false
 let rutrackerBounds = null
 let sourceResultCache = new Map()
+let sourceResultCacheTimer = null
 let torrentLoadInProgress = false
+let signalingSocket = null
+let signalingSocketHandlers = new Map()
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.avi', '.ogv', '.flv', '.wmv', '.ts', '.3gp', '.m2ts'])
 const MAX_TORRENT_FILE_BYTES = Number(process.env.MAX_TORRENT_FILE_BYTES || 10 * 1024 * 1024)
 const MAX_MAGNET_URI_LENGTH = Number(process.env.MAX_MAGNET_URI_LENGTH || 2048)
 const FETCH_TORRENT_TIMEOUT_MS = Number(process.env.FETCH_TORRENT_TIMEOUT_MS || 30_000)
+const TORRENT_READY_TIMEOUT_MS = Number(process.env.TORRENT_READY_TIMEOUT_MS || 45_000)
 const CATALOG_SEARCH_TIMEOUT_MS = Number(process.env.CATALOG_SEARCH_TIMEOUT_MS || 15_000)
 const CATALOG_MAX_RESULTS = Number(process.env.CATALOG_MAX_RESULTS || 24)
 const SOURCE_RESULT_CACHE_TTL_MS = Number(process.env.SOURCE_RESULT_CACHE_TTL_MS || 30 * 60 * 1000)
+const SOURCE_RESULT_CACHE_PRUNE_INTERVAL_MS = Number(process.env.SOURCE_RESULT_CACHE_PRUNE_INTERVAL_MS || 5 * 60 * 1000)
 const MAX_MEMORY_CHUNKS = Number(process.env.MAX_MEMORY_CHUNKS || 384)
 const MAX_MEMORY_MB = Number(process.env.MAX_MEMORY_MB || 512)
 const MPV_DEMUXER_MAX_BYTES = process.env.MPV_DEMUXER_MAX_BYTES || '24MiB'
@@ -99,6 +106,10 @@ const MPV_SHUTDOWN_KILL_AFTER_MS = Number(process.env.MPV_SHUTDOWN_KILL_AFTER_MS
 const MPV_VERBOSE_LOGS = ['1', 'true', 'yes'].includes(String(process.env.MPV_VERBOSE_LOGS || '').toLowerCase())
 const MPV_FULLSCREEN = ['1', 'true', 'yes'].includes(String(process.env.MPV_FULLSCREEN || '').toLowerCase())
 const MPV_PLAYBACK_HEAD_SYNC_MS = Number(process.env.MPV_PLAYBACK_HEAD_SYNC_MS || 3000)
+const MPV_LOW_CACHE_THRESHOLD_SECONDS = Number(process.env.MPV_LOW_CACHE_THRESHOLD_SECONDS || 0.5)
+const MPV_LOW_CACHE_EVENT_INTERVAL_MS = Number(process.env.MPV_LOW_CACHE_EVENT_INTERVAL_MS || 15_000)
+const MPV_STDIO_LOG_INTERVAL_MS = Number(process.env.MPV_STDIO_LOG_INTERVAL_MS || 1000)
+const MPV_STDIO_LOG_MAX_BYTES = Number(process.env.MPV_STDIO_LOG_MAX_BYTES || 2000)
 const PLAYER_LOG_MAX_LINES = 400
 const HEALTH_SNAPSHOT_INTERVAL_MS = Number(process.env.HEALTH_SNAPSHOT_INTERVAL_MS || 60_000)
 const MEMORY_PRESSURE_INTERVAL_MS = Number(process.env.MEMORY_PRESSURE_INTERVAL_MS || 5000)
@@ -110,6 +121,28 @@ const MEMORY_PRESSURE_RSS_LIMIT_BYTES = parseByteSize(
 )
 const MEMORY_PRESSURE_TARGET_RATIO = Number(process.env.MEMORY_PRESSURE_TARGET_RATIO || 0.50)
 const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 10_000)
+const DEFAULT_ACK_TIMEOUT_MS = Number(process.env.SOCKET_ACK_TIMEOUT_MS || 8000)
+const SOCKET_RECONNECTION_ATTEMPTS = Number(process.env.SOCKET_RECONNECTION_ATTEMPTS || 50)
+const ALLOWED_RENDERER_SOCKET_EVENTS = new Set([
+  'connect',
+  'disconnect',
+  'connect_error',
+  'room:snapshot',
+  'room:members',
+  'torrent:update',
+  'control:state'
+])
+const ALLOWED_RENDERER_SOCKET_ACK_EVENTS = new Set([
+  'room:join',
+  'torrent:set',
+  'torrent:file-selected',
+  'torrent:ready',
+  'torrent:get-payload',
+  'control:set'
+])
+const ALLOWED_RENDERER_SOCKET_EMIT_EVENTS = new Set([
+  'host:heartbeat'
+])
 const UPDATE_REPO = process.env.UPDATE_REPO || DEFAULT_UPDATE_REPO
 const UPDATE_CHECK_INTERVAL_MS = Number(process.env.UPDATE_CHECK_INTERVAL_MS || 6 * 60 * 60 * 1000)
 const DISABLE_UPDATE_CHECK = ['1', 'true', 'yes'].includes(String(process.env.DISABLE_UPDATE_CHECK || '').toLowerCase())
@@ -118,6 +151,15 @@ let mpvPreflight = null
 let healthSnapshotTimer = null
 let memoryPressureTimer = null
 let playbackHeadSyncTimer = null
+
+function withShutdownTimeout(promise, label, timeoutMs = SHUTDOWN_TIMEOUT_MS) {
+  return Promise.race([
+    Promise.resolve(promise),
+    delay(timeoutMs).then(() => {
+      appLogger.warn('Shutdown step timed out', { label, timeoutMs })
+    })
+  ])
+}
 
 const externalPlayer = {
   process: null,
@@ -128,6 +170,11 @@ const externalPlayer = {
   requestId: 1,
   lastStdout: '',
   lastStderr: '',
+  stdioLog: {
+    stdout: '',
+    stderr: '',
+    timer: null
+  },
   status: {
     running: false,
     connected: false,
@@ -265,6 +312,34 @@ function tailText(text, max = 2000) {
   return clean.length > max ? clean.slice(-max) : clean
 }
 
+function flushMpvStdioLogs() {
+  const stdout = externalPlayer.stdioLog.stdout
+  const stderr = externalPlayer.stdioLog.stderr
+  externalPlayer.stdioLog.stdout = ''
+  externalPlayer.stdioLog.stderr = ''
+  if (stdout) playerLog('MPV stdout', stdout)
+  if (stderr) playerLog('MPV stderr', stderr)
+}
+
+function clearMpvStdioLogTimer({ flush = false } = {}) {
+  if (externalPlayer.stdioLog.timer) clearTimeout(externalPlayer.stdioLog.timer)
+  externalPlayer.stdioLog.timer = null
+  if (flush) flushMpvStdioLogs()
+}
+
+function queueMpvStdioLog(kind, text) {
+  const clean = tailText(text, MPV_STDIO_LOG_MAX_BYTES)
+  if (!clean) return
+  const previous = externalPlayer.stdioLog[kind]
+  externalPlayer.stdioLog[kind] = tailText(previous ? `${previous}\n${clean}` : clean, MPV_STDIO_LOG_MAX_BYTES)
+  if (externalPlayer.stdioLog.timer) return
+  externalPlayer.stdioLog.timer = setTimeout(() => {
+    externalPlayer.stdioLog.timer = null
+    flushMpvStdioLogs()
+  }, MPV_STDIO_LOG_INTERVAL_MS)
+  externalPlayer.stdioLog.timer.unref?.()
+}
+
 function validateMagnetURI(value) {
   const magnetURI = String(value || '').trim()
   if (!magnetURI.startsWith('magnet:?')) throw new Error('Invalid magnet URI')
@@ -276,6 +351,7 @@ function validateMagnetURI(value) {
 }
 
 function rememberSourceResults(results = []) {
+  ensureSourceResultCacheTimer()
   const now = Date.now()
   for (const item of results) {
     if (!item?.id) continue
@@ -294,6 +370,12 @@ function pruneSourceResultCache(now = Date.now()) {
 function getCachedSourceResult(resultId) {
   pruneSourceResultCache()
   return sourceResultCache.get(String(resultId || ''))?.item || null
+}
+
+function ensureSourceResultCacheTimer() {
+  if (sourceResultCacheTimer || !Number.isFinite(SOURCE_RESULT_CACHE_PRUNE_INTERVAL_MS) || SOURCE_RESULT_CACHE_PRUNE_INTERVAL_MS <= 0) return
+  sourceResultCacheTimer = setInterval(() => pruneSourceResultCache(), SOURCE_RESULT_CACHE_PRUNE_INTERVAL_MS)
+  sourceResultCacheTimer.unref?.()
 }
 
 function parseRangeHeader(value) {
@@ -510,6 +592,7 @@ async function closeWebTorrentStreamServer() {
   if (!streamServer?.listening) return
 
   await new Promise(resolve => {
+    if (typeof streamServer.closeAllConnections === 'function') streamServer.closeAllConnections()
     streamServer.close(err => {
       if (err) appLogger.warn('Local WebTorrent HTTP stream server close warning', err)
       resolve()
@@ -536,6 +619,21 @@ async function destroyWebTorrentClient() {
   selectedFile = null
 }
 
+async function openExternalSafe(target) {
+  try {
+    const safeUrl = new URL(target)
+    if (['https:', 'http:'].includes(safeUrl.protocol)) {
+      await shell.openExternal(target)
+      return { ok: true }
+    }
+    appLogger.warn('Blocked non-HTTP external URL', { url: target })
+    return { ok: false, error: 'Protocol not allowed' }
+  } catch (err) {
+    appLogger.error('Failed to open external URL', { url: target, error: err.message })
+    return { ok: false, error: err.message }
+  }
+}
+
 async function shutdownResources() {
   if (healthSnapshotTimer) clearInterval(healthSnapshotTimer)
   healthSnapshotTimer = null
@@ -543,11 +641,21 @@ async function shutdownResources() {
   memoryPressureTimer = null
   if (playbackHeadSyncTimer) clearInterval(playbackHeadSyncTimer)
   playbackHeadSyncTimer = null
+  if (sourceResultCacheTimer) clearInterval(sourceResultCacheTimer)
+  sourceResultCacheTimer = null
+  sourceResultCache.clear()
   destroyRutrackerView()
-  await stopExternalPlayer().catch(err => appLogger.warn('MPV shutdown warning', err))
-  await closeWebTorrentStreamServer().catch(err => appLogger.warn('Stream server shutdown warning', err))
-  await destroyWebTorrentClient().catch(err => appLogger.warn('WebTorrent shutdown warning', err))
-  await (embeddedSignalingServer?.close?.() ?? Promise.resolve()).catch(err => appLogger.warn('Embedded server shutdown warning', err))
+  closeSignalingSocket()
+
+  await withShutdownTimeout(stopExternalPlayer(), 'mpv')
+    .catch(err => appLogger.warn('MPV shutdown warning', err))
+  await withShutdownTimeout(closeWebTorrentStreamServer(), 'stream-server')
+    .catch(err => appLogger.warn('Stream server shutdown warning', err))
+  await withShutdownTimeout(destroyWebTorrentClient(), 'webtorrent')
+    .catch(err => appLogger.warn('WebTorrent shutdown warning', err))
+  await withShutdownTimeout(embeddedSignalingServer?.close?.() ?? Promise.resolve(), 'embedded-server')
+    .catch(err => appLogger.warn('Embedded server shutdown warning', err))
+
   embeddedSignalingServer = null
   await Promise.allSettled([
     appLogger.close?.(),
@@ -563,6 +671,120 @@ function sendToRenderer(channel, payload) {
   } catch (err) {
     appLogger.warn('Failed to send event to renderer', { channel, message: err.message })
   }
+}
+
+function normalizeSocketEventArg(arg) {
+  if (arg instanceof Error) {
+    return {
+      message: arg.message,
+      description: arg.description,
+      context: arg.context,
+      code: arg.code
+    }
+  }
+  return arg
+}
+
+function sendSocketEvent(socket, event, args = []) {
+  sendToRenderer('socket:event', {
+    event,
+    args: args.map(normalizeSocketEventArg),
+    socketId: socket?.id || null,
+    connected: Boolean(socket?.connected)
+  })
+}
+
+function closeSignalingSocket() {
+  if (!signalingSocket) return
+  const socket = signalingSocket
+  for (const [event, handler] of signalingSocketHandlers) {
+    socket.off(event, handler)
+  }
+  signalingSocketHandlers.clear()
+  socket.disconnect()
+  signalingSocket = null
+}
+
+function attachSignalingSocketHandlers(socket, url) {
+  signalingSocketHandlers = new Map()
+  for (const event of ALLOWED_RENDERER_SOCKET_EVENTS) {
+    const handler = (...args) => {
+      if (event === 'connect') {
+        appLogger.info('Socket connected', { socketId: socket.id, url })
+      } else if (event === 'disconnect') {
+        appLogger.warn('Socket disconnected', { socketId: socket.id || null, reason: args[0], url })
+      } else if (event === 'connect_error') {
+        const err = args[0]
+        appLogger.error('Socket connect_error', {
+          url,
+          message: err?.message || String(err),
+          description: err?.description,
+          context: err?.context
+        })
+      }
+
+      sendSocketEvent(socket, event, args)
+    }
+    signalingSocketHandlers.set(event, handler)
+    socket.on(event, handler)
+  }
+}
+
+function connectSignalingSocket(url, opts = {}) {
+  if (typeof url !== 'string' || !url.trim()) throw new Error('Socket URL is required')
+  closeSignalingSocket()
+  signalingSocket = io(url, {
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    reconnectionAttempts: SOCKET_RECONNECTION_ATTEMPTS,
+    reconnectionDelay: 600,
+    reconnectionDelayMax: 3000,
+    timeout: 15000,
+    auth: {
+      serverToken: opts?.auth?.serverToken || ''
+    }
+  })
+  attachSignalingSocketHandlers(signalingSocket, url)
+  appLogger.info('Socket connection requested', {
+    url,
+    hasServerToken: Boolean(opts?.auth?.serverToken),
+    transports: ['websocket', 'polling']
+  })
+  return true
+}
+
+function socketAckTimeout(timeoutMs) {
+  const value = Number(timeoutMs)
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_ACK_TIMEOUT_MS
+}
+
+function socketEmitAck(event, payload, timeoutMs) {
+  if (!ALLOWED_RENDERER_SOCKET_ACK_EVENTS.has(event)) {
+    throw new Error(`Socket ACK event is not exposed to renderer: ${event}`)
+  }
+  if (!signalingSocket) throw new Error('Socket is not connected')
+  const ackTimeout = socketAckTimeout(timeoutMs)
+  appLogger.debug('Socket emit ack', { event, timeoutMs: ackTimeout })
+
+  return new Promise(resolve => {
+    signalingSocket.timeout(ackTimeout).emit(event, payload, (err, response) => {
+      if (err) {
+        appLogger.warn('Socket ACK timeout/disconnect', { event, timeoutMs: ackTimeout, message: err.message || String(err) })
+        resolve({ ok: false, error: `ACK timeout/disconnect for ${event}: ${err.message || err}` })
+        return
+      }
+      resolve(response || { ok: true })
+    })
+  })
+}
+
+function socketEmit(event, payload) {
+  if (!ALLOWED_RENDERER_SOCKET_EMIT_EVENTS.has(event)) {
+    throw new Error(`Socket event is not exposed to renderer: ${event}`)
+  }
+  if (!signalingSocket) throw new Error('Socket is not connected')
+  signalingSocket.emit(event, payload)
+  return true
 }
 
 function sendRutrackerImport(payload) {
@@ -648,8 +870,8 @@ function handleRutrackerNavigation(url) {
   if (isRutrackerTopLevelUrl(url)) return { allow: true }
 
   const safeUrl = toSafeUrl(url)
-  if (safeUrl && (safeUrl.protocol === 'https:' || safeUrl.protocol === 'http:')) {
-    shell.openExternal(safeUrl.href).catch(err => appLogger.warn('Failed to open external URL from RuTracker view', { url: safeUrl.href, message: err.message }))
+  if (safeUrl) {
+    openExternalSafe(safeUrl.href).catch(err => appLogger.warn('Failed to open external URL from RuTracker view', { url: safeUrl.href, message: err.message }))
   } else {
     appLogger.warn('Blocked non-HTTP external URL from RuTracker view', { url })
   }
@@ -743,8 +965,8 @@ function ensureRutrackerView() {
 
 function normalizeRutrackerBounds(bounds) {
   const clean = {
-    x: Math.max(0, Math.round(Number(bounds?.x) || 0)),
-    y: Math.max(0, Math.round(Number(bounds?.y) || 0)),
+    x: Math.round(Number(bounds?.x) || 0),
+    y: Math.round(Number(bounds?.y) || 0),
     width: Math.max(0, Math.round(Number(bounds?.width) || 0)),
     height: Math.max(0, Math.round(Number(bounds?.height) || 0))
   }
@@ -958,6 +1180,7 @@ async function loadTorrent(payload, preferredFileIndex = null) {
 
   return await new Promise((resolve, reject) => {
     let torrent
+    let readyTimer = null
     try {
       const addOpts = {
         destroyStoreOnDestroy: true,
@@ -999,20 +1222,25 @@ async function loadTorrent(payload, preferredFileIndex = null) {
     }
 
     let settled = false
+    const cleanupListeners = () => {
+      if (readyTimer) clearTimeout(readyTimer)
+      readyTimer = null
+      torrent?.off?.('error', fail)
+      torrent?.off?.('ready', onReady)
+    }
+
     const fail = err => {
       if (settled) return
       settled = true
+      cleanupListeners()
       sendToRenderer('torrent:error', { message: err.message })
       removeTorrentAsync(torrent).catch(() => {})
       reject(err)
     }
 
-    torrent.once('error', fail)
-
-    torrent.once('ready', () => {
+    const onReady = () => {
       if (settled) return
-      torrent.off('error', fail)
-      currentTorrent = torrent
+      cleanupListeners()
 
       const videoFiles = normalizeVideoFiles(torrent)
       if (videoFiles.length === 0) {
@@ -1030,6 +1258,7 @@ async function loadTorrent(payload, preferredFileIndex = null) {
         return
       }
       selectedFile.select()
+      currentTorrent = torrent
       playerLog('Selected file enabled with bounded RAM-only streaming', { file: selectedFile.name })
 
       const result = {
@@ -1052,7 +1281,15 @@ async function loadTorrent(payload, preferredFileIndex = null) {
 
       settled = true
       resolve(result)
-    })
+    }
+
+    readyTimer = setTimeout(() => {
+      fail(new Error(`Timed out waiting for torrent metadata after ${TORRENT_READY_TIMEOUT_MS}ms`))
+    }, TORRENT_READY_TIMEOUT_MS)
+    readyTimer.unref?.()
+
+    torrent.once('error', fail)
+    torrent.once('ready', onReady)
   })
   } finally {
     torrentLoadInProgress = false
@@ -1089,9 +1326,9 @@ function updateMpvCacheFromStdout(text) {
     externalPlayer.status.cacheSeconds = parsed.cacheSeconds
     externalPlayer.status.cacheBytes = parsed.cacheBytes
     externalPlayer.status.cacheText = parsed.cacheText
-    if (Number.isFinite(parsed.cacheSeconds) && parsed.cacheSeconds < 0.5) {
+    if (Number.isFinite(parsed.cacheSeconds) && parsed.cacheSeconds < MPV_LOW_CACHE_THRESHOLD_SECONDS) {
       const now = Date.now()
-      if (!externalPlayer.status.lastLowCacheAt || now - externalPlayer.status.lastLowCacheAt >= 5000) {
+      if (!externalPlayer.status.lastLowCacheAt || now - externalPlayer.status.lastLowCacheAt >= MPV_LOW_CACHE_EVENT_INTERVAL_MS) {
         externalPlayer.status.lowCacheEvents += 1
         externalPlayer.status.lastLowCacheAt = now
       }
@@ -1253,6 +1490,7 @@ async function stopExternalPlayer(lastError = null) {
   const processRef = externalPlayer.process
   if (playbackHeadSyncTimer) clearInterval(playbackHeadSyncTimer)
   playbackHeadSyncTimer = null
+  clearMpvStdioLogTimer({ flush: true })
 
   if (processRef && externalPlayer.socket && externalPlayer.status.connected) {
     await Promise.race([
@@ -1361,6 +1599,7 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
   externalPlayer.ipcPath = ipcPath
   externalPlayer.lastStdout = ''
   externalPlayer.lastStderr = ''
+  clearMpvStdioLogTimer()
   externalPlayer.status.running = true
   externalPlayer.status.connected = false
   externalPlayer.status.filename = selectedFile.name
@@ -1440,6 +1679,7 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
     externalPlayer.process.once('exit', (code, signal) => {
       externalPlayer.status.running = false
       externalPlayer.status.connected = false
+      clearMpvStdioLogTimer({ flush: true })
       const payload = { code, signal, stdout: tailText(externalPlayer.lastStdout), stderr: tailText(externalPlayer.lastStderr) }
       playerLog('MPV process exited', payload)
       if (waitingForIpc) {
@@ -1453,7 +1693,7 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
     const text = String(chunk)
     updateMpvCacheFromStdout(text)
     externalPlayer.lastStdout = tailText(externalPlayer.lastStdout + text)
-    if (text.trim()) playerLog('MPV stdout', tailText(text, 1200))
+    queueMpvStdioLog('stdout', text)
   })
 
   externalPlayer.process.stderr?.on('data', chunk => {
@@ -1465,8 +1705,10 @@ async function launchExternalPlayer({ startTime = 0, playing = false } = {}) {
       // real playback failures are still detected through JSON IPC end-file events.
       if (/Cannot open file|No such file|Failed to open|Error opening|No protocol handler|Stream ends prematurely/i.test(text)) {
         externalPlayer.status.lastError = tailText(text, 1200)
+        playerLog('MPV stderr fatal', tailText(text, 1200))
+      } else {
+        queueMpvStdioLog('stderr', text)
       }
-      playerLog('MPV stderr', tailText(text, 1200))
     }
   })
 
@@ -1545,6 +1787,23 @@ async function controlExternalPlayer({ playing, time, hard = false, seek = false
 function getCurrentRamStore() {
   return currentTorrent?._torrgetherRamStore || null
 }
+
+ipcMain.handle('socket:connect', async (_event, { url, opts } = {}) => {
+  return connectSignalingSocket(url, opts)
+})
+
+ipcMain.handle('socket:disconnect', async () => {
+  closeSignalingSocket()
+  return true
+})
+
+ipcMain.handle('socket:emit-ack', async (_event, { event, payload, timeoutMs } = {}) => {
+  return socketEmitAck(event, payload, timeoutMs)
+})
+
+ipcMain.handle('socket:emit', async (_event, { event, payload } = {}) => {
+  return socketEmit(event, payload)
+})
 
 ipcMain.handle('torrent:open-dialog', async () => {
   const result = await dialog.showOpenDialog(win, {
@@ -1632,6 +1891,7 @@ ipcMain.handle('torrent:status', async () => {
     ramRecoveries: ramStats.recoveries ?? null,
     ramRecoveryWaits: ramStats.recoveryWaits ?? null,
     ramStaleMisses: ramStats.staleMisses ?? null,
+    ramRescans: ramStats.rescans ?? null,
     ramRecentEvictions: ramStats.recentEvictions ?? null,
     ramPendingReads: ramStats.pendingReads ?? null,
     ramMaxPendingReads: ramStats.maxPendingReads ?? null,
@@ -1737,8 +1997,7 @@ ipcMain.handle('app:update-check', async () => {
 ipcMain.handle('app:open-release-page', async (_event, url) => {
   const target = String(url || `https://github.com/${UPDATE_REPO}/releases`).trim()
   if (!isAllowedGithubReleaseUrl(target)) return { ok: false, error: 'Only GitHub release URLs can be opened' }
-  await shell.openExternal(target)
-  return { ok: true, url: target }
+  return await openExternalSafe(target)
 })
 
 ipcMain.handle('sources:search', async (_event, { query, filters } = {}) => {

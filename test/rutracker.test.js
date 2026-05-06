@@ -10,8 +10,8 @@ import {
 
 test('rutracker allowlist accepts only rutracker top-level navigation', () => {
   assert.equal(isRutrackerTopLevelUrl('https://rutracker.org/forum/index.php'), true)
-  assert.equal(isRutrackerTopLevelUrl('http://rutracker.org/forum/tracker.php'), true)
-  assert.equal(isRutrackerTopLevelUrl('https://static.rutracker.org/assets/app.js'), true)
+  assert.equal(isRutrackerTopLevelUrl('http://rutracker.org/forum/tracker.php'), false)
+  assert.equal(isRutrackerTopLevelUrl('https://static.rutracker.org/assets/app.js'), false)
   assert.equal(isRutrackerTopLevelUrl('https://evilrutracker.org/forum/index.php'), false)
   assert.equal(isRutrackerTopLevelUrl('https://rutracker.org.evil.test/forum/index.php'), false)
   assert.equal(isRutrackerTopLevelUrl('file:///tmp/rutracker.html'), false)

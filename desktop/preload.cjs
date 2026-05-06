@@ -1,10 +1,20 @@
 const { contextBridge, ipcRenderer } = require('electron')
-const { io } = require('socket.io-client')
 
-let socket = null
 const rendererSocketHandlers = new Map()
-const DEFAULT_ACK_TIMEOUT_MS = Number(process.env.SOCKET_ACK_TIMEOUT_MS || 8000)
-const SOCKET_RECONNECTION_ATTEMPTS = Number(process.env.SOCKET_RECONNECTION_ATTEMPTS || 50)
+const internalSocketHandlers = new Map()
+const socketState = {
+  connected: false,
+  id: null
+}
+const ALLOWED_RENDERER_SOCKET_EVENTS = new Set([
+  'connect',
+  'disconnect',
+  'connect_error',
+  'room:snapshot',
+  'room:members',
+  'torrent:update',
+  'control:state'
+])
 
 function appLog(level, message, data) {
   try {
@@ -18,102 +28,107 @@ let _rutrackerImportHandler = null
 let _rutrackerStatusHandler = null
 
 function closeSocket() {
-  if (!socket) return
-  socket.disconnect()
-  socket.removeAllListeners()
-  socket = null
   rendererSocketHandlers.clear()
+  socketState.connected = false
+  socketState.id = null
+}
+
+function assertAllowedSocketEvent(event) {
+  if (!ALLOWED_RENDERER_SOCKET_EVENTS.has(event)) {
+    throw new Error(`Socket event is not exposed to renderer: ${event}`)
+  }
+}
+
+function handleSocketEvent(_event, payload = {}) {
+  const event = payload?.event
+  if (!ALLOWED_RENDERER_SOCKET_EVENTS.has(event)) return
+
+  if (event === 'connect') {
+    socketState.connected = true
+    socketState.id = payload.socketId || null
+  } else if (event === 'disconnect') {
+    socketState.connected = false
+    socketState.id = null
+  } else {
+    socketState.connected = Boolean(payload.connected)
+    socketState.id = payload.socketId || null
+  }
+
+  const handler = rendererSocketHandlers.get(event)
+  if (handler) handler(...(Array.isArray(payload.args) ? payload.args : []))
+}
+
+internalSocketHandlers.set('socket:event', handleSocketEvent)
+ipcRenderer.on('socket:event', handleSocketEvent)
+
+function invokeSocketConnect(url, opts) {
+  ipcRenderer.invoke('socket:connect', { url, opts }).catch(err => {
+    appLog('error', 'Socket connect failed', { url, message: err.message || String(err) })
+  })
+}
+
+function invokeSocketDisconnect() {
+  ipcRenderer.invoke('socket:disconnect').catch(err => {
+    appLog('warn', 'Socket disconnect failed', { message: err.message || String(err) })
+  })
+}
+
+function socketEmitAck(event, payload, timeoutMs) {
+  if (!socketState.connected) throw new Error('Socket is not connected')
+  appLog('debug', 'Socket emit ack', { event, timeoutMs })
+  return ipcRenderer.invoke('socket:emit-ack', { event, payload, timeoutMs })
 }
 
 contextBridge.exposeInMainWorld('torrgether', {
   connectSocket(url, opts = {}) {
     closeSocket()
-    socket = io(url, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: SOCKET_RECONNECTION_ATTEMPTS,
-      reconnectionDelay: 600,
-      reconnectionDelayMax: 3000,
-      timeout: 15000,
-      auth: {
-        serverToken: opts?.auth?.serverToken || ''
-      }
-    })
-    appLog('info', 'Socket connection requested', {
-      url,
-      hasServerToken: Boolean(opts?.auth?.serverToken),
-      transports: ['websocket', 'polling']
-    })
-    socket.on('connect', () => {
-      appLog('info', 'Socket connected', { socketId: socket.id, url })
-    })
-    socket.on('disconnect', reason => {
-      appLog('warn', 'Socket disconnected', { socketId: socket?.id || null, reason, url })
-    })
-    socket.on('connect_error', err => {
-      appLog('error', 'Socket connect_error', { url, message: err.message, description: err.description, context: err.context })
-    })
+    invokeSocketConnect(url, opts)
     return true
   },
   disconnectSocket() {
     closeSocket()
+    invokeSocketDisconnect()
     appLog('info', 'Socket manually disconnected')
     return true
   },
   socketOn(event, callback) {
-    if (!socket) throw new Error('Socket is not connected')
-    // One renderer handler per event is enough for this MVP. Replacing the old
-    // handler prevents duplicated state updates after repeated Join clicks.
-    const previous = rendererSocketHandlers.get(event)
-    if (previous) socket.off(event, previous)
+    assertAllowedSocketEvent(event)
     const handler = (...args) => callback(...args)
     rendererSocketHandlers.set(event, handler)
-    socket.on(event, handler)
   },
   socketOff(event) {
-    if (!socket) return
-    const previous = rendererSocketHandlers.get(event)
-    if (previous) socket.off(event, previous)
+    assertAllowedSocketEvent(event)
     rendererSocketHandlers.delete(event)
   },
-  socketEmit(event, payload) {
-    if (!socket) throw new Error('Socket is not connected')
-    appLog('debug', 'Socket emit', { event })
-    socket.emit(event, payload)
+  emitRoomJoin(payload, timeoutMs) {
+    return socketEmitAck('room:join', payload, timeoutMs)
   },
-  socketEmitAck(event, payload, timeoutMs = DEFAULT_ACK_TIMEOUT_MS) {
-    if (!socket) throw new Error('Socket is not connected')
-    appLog('debug', 'Socket emit ack', { event, timeoutMs })
-
-    return new Promise(resolve => {
-      let settled = false
-      const finish = response => {
-        if (settled) return
-        settled = true
-        resolve(response)
-      }
-
-      const fallbackTimer = setTimeout(() => {
-        appLog('warn', 'Socket ACK fallback timeout', { event, timeoutMs })
-        finish({ ok: false, error: `ACK timeout after ${timeoutMs}ms for ${event}` })
-      }, timeoutMs + 250)
-
-      socket.timeout(timeoutMs).emit(event, payload, (err, response) => {
-        clearTimeout(fallbackTimer)
-        if (err) {
-          appLog('warn', 'Socket ACK timeout/disconnect', { event, timeoutMs, message: err.message || String(err) })
-          finish({ ok: false, error: `ACK timeout/disconnect for ${event}: ${err.message || err}` })
-          return
-        }
-        finish(response || { ok: true })
-      })
+  emitTorrentSet(payload, timeoutMs) {
+    return socketEmitAck('torrent:set', payload, timeoutMs)
+  },
+  emitTorrentFileSelected(payload, timeoutMs) {
+    return socketEmitAck('torrent:file-selected', payload, timeoutMs)
+  },
+  emitTorrentReady(payload, timeoutMs) {
+    return socketEmitAck('torrent:ready', payload, timeoutMs)
+  },
+  emitTorrentPayloadGet(payload, timeoutMs) {
+    return socketEmitAck('torrent:get-payload', payload, timeoutMs)
+  },
+  emitControlSet(payload, timeoutMs) {
+    return socketEmitAck('control:set', payload, timeoutMs)
+  },
+  emitHostHeartbeat(payload) {
+    if (!socketState.connected) throw new Error('Socket is not connected')
+    ipcRenderer.invoke('socket:emit', { event: 'host:heartbeat', payload }).catch(err => {
+      appLog('warn', 'Socket emit failed', { event: 'host:heartbeat', message: err.message || String(err) })
     })
   },
   socketConnected() {
-    return Boolean(socket?.connected)
+    return socketState.connected
   },
   socketId() {
-    return socket?.id || null
+    return socketState.id
   },
   openTorrentDialog: () => ipcRenderer.invoke('torrent:open-dialog'),
   loadTorrent: args => ipcRenderer.invoke('torrent:load', args),

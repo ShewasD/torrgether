@@ -3,8 +3,8 @@
 // WebTorrent marks a piece as available after it verifies the hash. If a RAM
 // store evicts that piece without telling WebTorrent, file streams can read a
 // stale bitfield=true state, get a store error, and end the HTTP response early.
-// This store keeps the cache bounded while marking evicted pieces unverified so
-// later reads are downloaded again instead of turning into a fake EOF.
+// This store keeps the cache bounded and, on a stale read, asks WebTorrent to
+// rescan public state before re-requesting the piece instead of returning fake EOF.
 
 const DEFAULT_MAX_MEMORY_MB = 512
 const DEFAULT_GET_TIMEOUT_MS = 45_000
@@ -97,14 +97,17 @@ export default class LruMemoryChunkStore {
     this.recoveryWaits = 0
     this.staleMisses = 0
     this.unverifiedMarks = 0
+    this.rescans = 0
     this.overLimitWarnings = 0
     this.lastOverLimitWarningAt = 0
     this.pendingReads = new Map()
+    this.rescanPromise = null
+    this.rescanActive = false
 
     if (this.torrent) {
       this.torrent._torrgetherRamStore = this
-      if (typeof this.torrent._markUnverified !== 'function') {
-        console.warn('LruMemoryChunkStore: WebTorrent _markUnverified is missing; stale-read recovery may not work correctly.')
+      if (typeof this.torrent.rescanFiles !== 'function') {
+        console.warn('LruMemoryChunkStore: WebTorrent rescanFiles() is missing; stale-read recovery may not work correctly.')
       }
     }
   }
@@ -134,6 +137,7 @@ export default class LruMemoryChunkStore {
       staleMisses: this.staleMisses,
       recentEvictions: this.recentEvictions.size,
       unverifiedMarks: this.unverifiedMarks,
+      rescans: this.rescans,
       pendingReads: this.pendingReadCount,
       pendingReadCount: this.pendingReadCount,
       maxPendingReads: this.maxPendingReads,
@@ -175,6 +179,10 @@ export default class LruMemoryChunkStore {
     if (this.pendingReads.has(index)) {
       this._recoverStaleMiss(index, opts, cb)
       return
+    }
+
+    if (this._isInternalRescanRead(opts)) {
+      return queueMicrotask(() => cb(makeNotFoundError(index)))
     }
 
     if (!this._hasStaleVerifiedBit(index) && !this._isRecentlyEvicted(index)) {
@@ -320,11 +328,11 @@ export default class LruMemoryChunkStore {
   _doEvict(index, requestNow) {
     const oldBuffer = this.chunks.get(index)
     if (!oldBuffer) return
-    this._markPieceUnavailable(index, requestNow)
     this.chunks.delete(index)
     this._rememberEviction(index)
     this.bytes -= oldBuffer.length
     this.evictions += 1
+    if (requestNow) this._requestPiece(index)
   }
 
   _hasStaleVerifiedBit(index) {
@@ -380,6 +388,7 @@ export default class LruMemoryChunkStore {
     }
 
     const finishAll = err => {
+      if (this.pendingReads.get(index) !== recovery) return
       clearTimeout(recovery.timer)
       this.torrent?.removeListener?.('verified', recovery.listener)
       this.pendingReads.delete(index)
@@ -412,7 +421,7 @@ export default class LruMemoryChunkStore {
 
     this.pendingReads.set(index, recovery)
     this.torrent?.on?.('verified', recovery.listener)
-    this._markPieceUnavailable(index, true)
+    this._recoverEvictedPiece(index).catch(err => finishAll(err))
   }
 
   _failPending(err) {
@@ -428,32 +437,46 @@ export default class LruMemoryChunkStore {
     }
   }
 
-  _markPieceUnavailable(index, requestNow) {
+  async _recoverEvictedPiece(index) {
+    if (this._hasStaleVerifiedBit(index)) {
+      await this._rescanTorrentStore()
+    }
+    if (this.closed || this.pendingReads.has(index) === false) return
+    this._requestPiece(index)
+  }
+
+  _requestPiece(index) {
     const torrent = this.torrent
     if (!torrent || torrent.destroyed) return
-
-    if (torrent.bitfield?.get?.(index) && typeof torrent._markUnverified === 'function') {
-      torrent._markUnverified(index)
-      this.unverifiedMarks += 1
-    }
-
-    this._ensurePieceCanBeReserved(index)
-
-    if (requestNow) {
-      if (typeof torrent.select === 'function') torrent.select(index, index, 2)
-      if (typeof torrent.critical === 'function') torrent.critical(index, index)
-    }
-
-    if (typeof torrent._updateSelections === 'function') torrent._updateSelections()
-    if (typeof torrent._update === 'function') torrent._update()
+    if (typeof torrent.select === 'function') torrent.select(index, index, 2)
+    if (typeof torrent.critical === 'function') torrent.critical(index, index)
   }
 
-  _ensurePieceCanBeReserved(index) {
-    const reservations = this.torrent?._reservations
-    if (Array.isArray(reservations) && !Array.isArray(reservations[index])) {
-      reservations[index] = []
-    }
+  _rescanTorrentStore() {
+    const torrent = this.torrent
+    if (!torrent || torrent.destroyed) return Promise.reject(new Error('Torrent is not available for RAM recovery'))
+    if (typeof torrent.rescanFiles !== 'function') return Promise.reject(new Error('WebTorrent rescanFiles() is not available for RAM recovery'))
+    if (this.rescanPromise) return this.rescanPromise
+
+    this.rescans += 1
+    this.rescanActive = true
+    this.rescanPromise = new Promise((resolve, reject) => {
+      try {
+        torrent.rescanFiles(err => err ? reject(err) : resolve())
+      } catch (err) {
+        reject(err)
+      }
+    }).finally(() => {
+      this.rescanActive = false
+      this.rescanPromise = null
+    })
+    return this.rescanPromise
   }
+
+  _isInternalRescanRead(opts = {}) {
+    return this.rescanActive && !Object.prototype.hasOwnProperty.call(opts, 'offset')
+  }
+
 
   _warnIfOverLimit(protectedIndex) {
     if (this.bytes <= this.maxBytes && this.chunks.size <= this.maxChunks) return

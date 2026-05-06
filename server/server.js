@@ -1,6 +1,7 @@
 import express from 'express'
 import http from 'http'
 import path from 'path'
+import { randomBytes } from 'crypto'
 import { fileURLToPath } from 'url'
 import { Server } from 'socket.io'
 import { formatServerUrls, getServerConfig } from '../shared/config.js'
@@ -11,6 +12,12 @@ export const MAX_CLIENT_ID_LENGTH = 120
 const MAX_TORRENT_FILE_BASE64_BYTES = 7 * 1024 * 1024 // protects the signaling server
 const MAX_MAGNET_URI_LENGTH = 2048
 const MAX_SELECTED_FILE_INDEX = 10000
+const DEFAULT_MAX_MEMBERS_PER_ROOM = 32
+const DEFAULT_TORRENT_PAYLOAD_CACHE_TTL_MS = 10 * 60 * 1000
+const DEFAULT_TORRENT_PAYLOAD_CACHE_MAX_BYTES = 32 * 1024 * 1024
+const DEFAULT_TORRENT_PAYLOAD_CACHE_MAX_ENTRIES = 128
+const DEFAULT_CONTROL_RATE_LIMIT_WINDOW_MS = 10_000
+const DEFAULT_CONTROL_RATE_LIMIT_MAX = 30
 
 function numericOption(value, fallback, { min = 0 } = {}) {
   const number = Number(value)
@@ -33,11 +40,26 @@ export function normalizeClientId(value) {
   return trimmed
 }
 
-function normalizeRoomId(value) {
+export function normalizeRoomId(value) {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(trimmed)) return null
   return trimmed
+}
+
+export function normalizeDisplayName(value) {
+  const clean = String(value || 'Anonymous')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return (clean || 'Anonymous').slice(0, 40)
+}
+
+export function decodedBase64Bytes(value) {
+  const compact = String(value || '').replace(/\s+/g, '')
+  if (!compact) return 0
+  const padding = compact.endsWith('==') ? 2 : compact.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor((compact.length * 3) / 4) - padding)
 }
 
 export function createSocketIoOptions(serverConfig, {
@@ -113,6 +135,12 @@ export async function startSignalingServer(options = {}) {
   const connectionStateRecovery = booleanEnv(optionOrDefault(options, 'connectionStateRecovery', env.SOCKET_CONNECTION_STATE_RECOVERY), false) &&
     !disabledEnv(optionOrDefault(options, 'disableConnectionStateRecovery', env.DISABLE_CONNECTION_STATE_RECOVERY))
   const maxRooms = integerOption(optionOrDefault(options, 'maxRooms', env.MAX_ROOMS), 5000, { min: 1 })
+  const maxMembersPerRoom = integerOption(optionOrDefault(options, 'maxMembersPerRoom', env.MAX_USERS_PER_ROOM), DEFAULT_MAX_MEMBERS_PER_ROOM, { min: 1 })
+  const torrentPayloadCacheTtlMs = numericOption(optionOrDefault(options, 'torrentPayloadCacheTtlMs', env.TORRENT_PAYLOAD_CACHE_TTL_MS), DEFAULT_TORRENT_PAYLOAD_CACHE_TTL_MS, { min: 1000 })
+  const torrentPayloadCacheMaxBytes = integerOption(optionOrDefault(options, 'torrentPayloadCacheMaxBytes', env.TORRENT_PAYLOAD_CACHE_MAX_BYTES), DEFAULT_TORRENT_PAYLOAD_CACHE_MAX_BYTES, { min: 1024 })
+  const torrentPayloadCacheMaxEntries = integerOption(optionOrDefault(options, 'torrentPayloadCacheMaxEntries', env.TORRENT_PAYLOAD_CACHE_MAX_ENTRIES), DEFAULT_TORRENT_PAYLOAD_CACHE_MAX_ENTRIES, { min: 1 })
+  const controlRateLimitWindowMs = numericOption(optionOrDefault(options, 'controlRateLimitWindowMs', env.CONTROL_RATE_LIMIT_WINDOW_MS), DEFAULT_CONTROL_RATE_LIMIT_WINDOW_MS, { min: 1000 })
+  const controlRateLimitMax = integerOption(optionOrDefault(options, 'controlRateLimitMax', env.CONTROL_RATE_LIMIT_MAX), DEFAULT_CONTROL_RATE_LIMIT_MAX, { min: 1 })
 
   let serverUrls = formatServerUrls(serverConfig)
   const logger = options.logger || createLogger({
@@ -132,6 +160,9 @@ export async function startSignalingServer(options = {}) {
     connectionStateRecovery
   }))
   const rooms = new Map()
+  const torrentPayloadCache = new Map()
+  const controlRateLimits = new Map()
+  let torrentPayloadCacheBytes = 0
   let maintenanceTimer = null
   let closed = false
 
@@ -144,6 +175,9 @@ export async function startSignalingServer(options = {}) {
       ok: true,
       rooms: rooms.size,
       maxRooms,
+      maxMembersPerRoom,
+      torrentPayloadCacheEntries: torrentPayloadCache.size,
+      torrentPayloadCacheBytes,
       uptime: process.uptime(),
       publicUrl: serverUrls.publicUrl,
       tokenRequired: Boolean(serverConfig.serverToken)
@@ -200,6 +234,60 @@ export async function startSignalingServer(options = {}) {
     room.cleanupTimer = null
   }
 
+  function removeTorrentPayload(payloadId) {
+    if (!payloadId) return false
+    const entry = torrentPayloadCache.get(payloadId)
+    if (!entry) return false
+    torrentPayloadCache.delete(payloadId)
+    torrentPayloadCacheBytes = Math.max(0, torrentPayloadCacheBytes - entry.bytes)
+    return true
+  }
+
+  function pruneTorrentPayloadCache(current = now()) {
+    for (const [payloadId, entry] of torrentPayloadCache) {
+      if (current >= entry.expiresAt) removeTorrentPayload(payloadId)
+    }
+    while (torrentPayloadCache.size > torrentPayloadCacheMaxEntries || torrentPayloadCacheBytes > torrentPayloadCacheMaxBytes) {
+      const oldest = torrentPayloadCache.keys().next().value
+      if (!oldest) break
+      removeTorrentPayload(oldest)
+    }
+  }
+
+  function rememberTorrentPayload({ roomId, version, base64 }) {
+    pruneTorrentPayloadCache()
+    const payloadId = randomBytes(16).toString('hex')
+    const bytes = decodedBase64Bytes(base64)
+    torrentPayloadCache.set(payloadId, {
+      roomId,
+      version,
+      base64,
+      bytes,
+      expiresAt: now() + torrentPayloadCacheTtlMs
+    })
+    torrentPayloadCacheBytes += bytes
+    pruneTorrentPayloadCache()
+    if (!torrentPayloadCache.has(payloadId)) {
+      throw new Error('Torrent payload cache is full')
+    }
+    return { payloadId, bytes }
+  }
+
+  function consumeControlRateLimit(roomId, clientId) {
+    const current = now()
+    for (const [key, entry] of controlRateLimits) {
+      if (current >= entry.resetAt) controlRateLimits.delete(key)
+    }
+    const key = `${roomId}:${clientId}`
+    const existing = controlRateLimits.get(key)
+    if (!existing || current >= existing.resetAt) {
+      controlRateLimits.set(key, { count: 1, resetAt: current + controlRateLimitWindowMs })
+      return false
+    }
+    existing.count += 1
+    return existing.count > controlRateLimitMax
+  }
+
   function purgeOldOfflineMembers(room) {
     const cutoff = now() - offlineMemberTtlMs
     for (const [clientId, member] of room.members) {
@@ -211,6 +299,7 @@ export async function startSignalingServer(options = {}) {
     const room = rooms.get(roomId)
     if (!room) return false
     cancelRoomCleanup(room)
+    removeTorrentPayload(room.torrent?.payloadId)
     rooms.delete(roomId)
     logger.info('Deleted inactive room', { roomId })
     return true
@@ -239,6 +328,7 @@ export async function startSignalingServer(options = {}) {
   }
 
   function runRoomMaintenance() {
+    pruneTorrentPayloadCache()
     for (const room of rooms.values()) {
       purgeOldOfflineMembers(room)
       if (!maybeDeleteEmptyRoom(room) && onlineMembers(room).length === 0) scheduleRoomCleanup(room)
@@ -265,7 +355,23 @@ export async function startSignalingServer(options = {}) {
       version: torrent.version
     }
     if (torrent.magnetURI) safe.magnetURI = torrent.magnetURI
+    if (torrent.payloadId) safe.payloadId = torrent.payloadId
+    if (torrent.base64Bytes) safe.base64Bytes = torrent.base64Bytes
     return safe
+  }
+
+  function privateTorrentPayload(torrent) {
+    if (!torrent?.payloadId) return null
+    const entry = torrentPayloadCache.get(torrent.payloadId)
+    if (!entry || entry.roomId !== torrent.roomId || entry.version !== torrent.version || now() >= entry.expiresAt) {
+      removeTorrentPayload(torrent.payloadId)
+      return null
+    }
+    entry.expiresAt = now() + torrentPayloadCacheTtlMs
+    return {
+      ...publicTorrent(torrent),
+      base64: entry.base64
+    }
   }
 
   function snapshot(room, clientId) {
@@ -368,7 +474,7 @@ export async function startSignalingServer(options = {}) {
         ack?.({ ok: false, error: 'roomId must be 1-64 characters and contain only letters, numbers, underscores, or hyphens' })
         return
       }
-      const safeName = String(name || 'Anonymous').slice(0, 40)
+      const safeName = normalizeDisplayName(name)
       let room
       try {
         room = getRoom(safeRoomId)
@@ -387,6 +493,15 @@ export async function startSignalingServer(options = {}) {
       purgeOldOfflineMembers(room)
 
       const previous = room.members.get(safeClientId)
+      if (!previous && room.members.size >= maxMembersPerRoom) {
+        ack?.({ ok: false, error: `Room member limit reached (${maxMembersPerRoom})` })
+        logger.warn('Rejected room join because member capacity is exhausted', {
+          socketId: socket.id,
+          roomId: safeRoomId,
+          maxMembersPerRoom
+        })
+        return
+      }
       const member = {
         clientId: safeClientId,
         name: safeName,
@@ -442,7 +557,8 @@ export async function startSignalingServer(options = {}) {
         return ack?.({ ok: false, error: 'Invalid magnet URI' })
       }
 
-      if (isTorrentFile && Buffer.byteLength(torrentPayload.base64, 'base64') > MAX_TORRENT_FILE_BASE64_BYTES) {
+      const base64Bytes = isTorrentFile ? decodedBase64Bytes(torrentPayload.base64) : 0
+      if (isTorrentFile && base64Bytes > MAX_TORRENT_FILE_BASE64_BYTES) {
         return ack?.({ ok: false, error: '.torrent file is too large for this MVP signaling server' })
       }
 
@@ -463,11 +579,29 @@ export async function startSignalingServer(options = {}) {
         host.torrentReadyAt = now()
       }
 
+      removeTorrentPayload(room.torrent?.payloadId)
+      let payloadRef = {}
+      if (isTorrentFile) {
+        try {
+          payloadRef = rememberTorrentPayload({
+            roomId: room.id,
+            version: room.torrentVersion,
+            base64: torrentPayload.base64
+          })
+        } catch (err) {
+          return ack?.({ ok: false, error: err.message })
+        }
+      }
+
       room.torrent = {
-        ...torrentPayload,
+        kind: torrentPayload.kind,
         name: String(torrentPayload.name || 'Untitled torrent').slice(0, 200),
+        roomId: room.id,
         selectedFileIndex,
         version: room.torrentVersion,
+        magnetURI: isMagnet ? torrentPayload.magnetURI : undefined,
+        payloadId: payloadRef.payloadId,
+        base64Bytes: payloadRef.bytes,
         setBy: socket.data.clientId,
         setAt: now()
       }
@@ -481,10 +615,11 @@ export async function startSignalingServer(options = {}) {
       }
       touchRoom(room)
 
-      io.to(room.id).emit('torrent:update', room.torrent)
+      const publicRoomTorrent = publicTorrent(room.torrent)
+      ack?.({ ok: true, torrentVersion: room.torrentVersion, torrent: publicRoomTorrent })
+      io.to(room.id).emit('torrent:update', publicRoomTorrent)
       io.to(room.id).emit('control:state', room.state)
       io.to(room.id).emit('room:members', publicMembers(room))
-      ack?.({ ok: true, torrentVersion: room.torrentVersion })
       logger.info('Torrent set for room', {
         roomId: room.id,
         clientId: socket.data.clientId,
@@ -526,10 +661,11 @@ export async function startSignalingServer(options = {}) {
       }
       touchRoom(room)
 
-      io.to(room.id).emit('torrent:update', room.torrent)
+      const publicRoomTorrent = publicTorrent(room.torrent)
+      ack?.({ ok: true, torrentVersion: room.torrentVersion, torrent: publicRoomTorrent })
+      io.to(room.id).emit('torrent:update', publicRoomTorrent)
       io.to(room.id).emit('control:state', room.state)
       io.to(room.id).emit('room:members', publicMembers(room))
-      ack?.({ ok: true, torrentVersion: room.torrentVersion })
       logger.info('Torrent file selected', {
         roomId: room.id,
         clientId: socket.data.clientId,
@@ -574,11 +710,27 @@ export async function startSignalingServer(options = {}) {
       })
     })
 
+    socket.on('torrent:get-payload', ({ version, payloadId } = {}, ack) => {
+      const room = rooms.get(socket.data.roomId)
+      if (!room) return ack?.({ ok: false, error: 'Join a room first' })
+      if (!room.torrent) return ack?.({ ok: false, error: 'Torrent is not set' })
+      if (Number(version) !== room.torrentVersion || payloadId !== room.torrent.payloadId) {
+        return ack?.({ ok: false, error: 'Stale torrent payload', expectedVersion: room.torrentVersion })
+      }
+
+      const torrent = privateTorrentPayload(room.torrent)
+      if (!torrent?.base64) return ack?.({ ok: false, error: 'Torrent payload expired; ask the host to share it again' })
+      ack?.({ ok: true, torrent })
+    })
+
     socket.on('control:set', ({ playing, time, reason } = {}, ack) => {
       const room = rooms.get(socket.data.roomId)
       if (!room) return ack?.({ ok: false, error: 'Join a room first' })
       if (room.hostClientId !== socket.data.clientId) {
         return ack?.({ ok: false, error: 'Only the host controls playback in this MVP' })
+      }
+      if (consumeControlRateLimit(room.id, socket.data.clientId)) {
+        return ack?.({ ok: false, error: 'Playback control rate limit exceeded' })
       }
 
       const nextTime = Math.max(0, Number(time) || 0)
@@ -606,6 +758,7 @@ export async function startSignalingServer(options = {}) {
     socket.on('host:heartbeat', ({ playing, time } = {}) => {
       const room = rooms.get(socket.data.roomId)
       if (!room || room.hostClientId !== socket.data.clientId) return
+      if (consumeControlRateLimit(room.id, socket.data.clientId)) return
 
       room.state = {
         seq: room.state.seq + 1,
@@ -679,6 +832,9 @@ export async function startSignalingServer(options = {}) {
       closed = true
       if (maintenanceTimer) clearInterval(maintenanceTimer)
       for (const room of rooms.values()) cancelRoomCleanup(room)
+      torrentPayloadCache.clear()
+      torrentPayloadCacheBytes = 0
+      controlRateLimits.clear()
       await new Promise(resolve => io.close(() => resolve()))
       await closeHttpServer(httpServer)
       await logger.close?.()
@@ -705,6 +861,9 @@ export async function startSignalingServer(options = {}) {
         if (!serverConfig.serverToken && (serverConfig.host === '0.0.0.0' || serverConfig.host === '::')) {
           logger.warn('Server is listening on a public interface without SERVER_TOKEN')
         }
+        if (serverConfig.corsOrigin === '*' && (serverConfig.host === '0.0.0.0' || serverConfig.host === '::')) {
+          logger.warn('Server is using wildcard CORS on a public interface; restrict CORS_ORIGIN for production')
+        }
         logger.info('Torrgether signaling server started', {
           host: serverConfig.host,
           port: serverConfig.port,
@@ -713,7 +872,11 @@ export async function startSignalingServer(options = {}) {
         tokenRequired: Boolean(serverConfig.serverToken),
         authRateLimitMaxAttempts,
         authRateLimitWindowMs,
+        maxRooms,
+        maxMembersPerRoom,
         maxHttpBufferSize,
+        torrentPayloadCacheMaxBytes,
+        torrentPayloadCacheMaxEntries,
         logPath: logger.filePath
       })
         resolve()

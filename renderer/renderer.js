@@ -6,6 +6,9 @@ const RUTRACKER_BOUNDS_MIN_SIZE = 24
 const EMBEDDED_VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.webm', '.ogv', '.ogg', '.mov'])
 
 const els = {
+  homeWorkspace: $('homeWorkspace'),
+  watchWorkspace: $('watchWorkspace'),
+  settingsWorkspace: $('settingsWorkspace'),
   languageSelect: $('languageSelect'),
   contentLanguageSelect: $('contentLanguageSelect'),
   updateBanner: $('updateBanner'),
@@ -35,12 +38,6 @@ const els = {
   roomId: $('roomId'),
   displayName: $('displayName'),
   joinBtn: $('joinBtn'),
-  catalogSourceTab: $('catalogSourceTab'),
-  catalogSourcePanel: $('catalogSourcePanel'),
-  manualSourceTab: $('manualSourceTab'),
-  rutrackerSourceTab: $('rutrackerSourceTab'),
-  manualSourcePanel: $('manualSourcePanel'),
-  rutrackerPanel: $('rutrackerPanel'),
   rutrackerViewport: $('rutrackerViewport'),
   rutrackerOpenBtn: $('rutrackerOpenBtn'),
   rutrackerCloseBtn: $('rutrackerCloseBtn'),
@@ -58,6 +55,14 @@ const els = {
   connectionStatus: $('connectionStatus'),
   mpvPreflightStatus: $('mpvPreflightStatus'),
   roleStatus: $('roleStatus'),
+  homeRoomStatus: $('homeRoomStatus'),
+  homeRoleStatus: $('homeRoleStatus'),
+  watchRoomStatus: $('watchRoomStatus'),
+  watchRoleStatus: $('watchRoleStatus'),
+  watchConnectionStatus: $('watchConnectionStatus'),
+  watchMembersCount: $('watchMembersCount'),
+  watchPlaybackStatus: $('watchPlaybackStatus'),
+  watchPlayerStatus: $('watchPlayerStatus'),
   peerStatus: $('peerStatus'),
   speedStatus: $('speedStatus'),
   progressPercent: $('progressPercent'),
@@ -100,6 +105,9 @@ const state = {
   suppressHostPoll: false,
   lastRemoteSeq: 0,
   joined: false,
+  joinInFlight: false,
+  activeRoomKey: null,
+  joinedSocketId: null,
   roomPlaybackState: null,
   mpvAvailable: false,
   mpvDetails: null,
@@ -116,8 +124,7 @@ const state = {
   torrentStatusInFlight: false,
   externalStatusIntervalInFlight: false,
   connectionStatus: { key: 'status.offline', params: {}, kind: 'danger' },
-  sourceTab: 'catalog',
-  workspaceTab: 'watch',
+  workspaceTab: 'home',
   rutrackerVisible: false,
   rutrackerBoundsRequest: null,
   contentLanguage: localStorage.getItem('torrgether.contentLanguage') || 'any',
@@ -144,7 +151,7 @@ function registerInterval(callback, ms) {
   return id
 }
 
-window.addEventListener('beforeunload', () => {
+window?.addEventListener('beforeunload', () => {
   for (const id of intervalHandles) clearInterval(id)
   intervalHandles.clear()
 })
@@ -162,6 +169,46 @@ function t(key, params = {}) {
   return translate(state.locale, key, params)
 }
 
+function roomName() {
+  return state.roomId || els.roomId?.value?.trim?.() || ''
+}
+
+function roleLabel() {
+  if (!state.joined) return '-'
+  return state.isHost ? t('status.host') : t('status.viewer')
+}
+
+function setPillKind(el, kind = 'neutral') {
+  if (!el) return
+  el.classList.remove('ok', 'warn', 'danger', 'neutral')
+  el.classList.add(kind)
+}
+
+function renderRoomSummary() {
+  const room = roomName()
+  const joinedText = state.joined && room ? t('room.joined', { room }) : t('room.noRoom')
+  if (els.homeRoomStatus) els.homeRoomStatus.textContent = joinedText
+  if (els.watchRoomStatus) els.watchRoomStatus.textContent = joinedText
+  if (els.homeRoleStatus) els.homeRoleStatus.textContent = roleLabel()
+  if (els.watchRoleStatus) els.watchRoleStatus.textContent = roleLabel()
+  if (els.watchMembersCount) {
+    els.watchMembersCount.textContent = t('participants.count', { count: state.members.length })
+  }
+  setPillKind(els.homeRoomStatus, state.joined ? 'ok' : 'neutral')
+  setPillKind(els.watchRoomStatus, state.joined ? 'ok' : 'neutral')
+  setPillKind(els.homeRoleStatus, state.isHost ? 'ok' : state.joined ? 'neutral' : 'neutral')
+  setPillKind(els.watchRoleStatus, state.isHost ? 'ok' : state.joined ? 'neutral' : 'neutral')
+}
+
+function renderPlaybackStatus({ text, playerText, kind = 'neutral' } = {}) {
+  const fallback = state.currentTorrent ? t('watch.readyState') : t('watch.emptyState')
+  if (els.watchPlaybackStatus) els.watchPlaybackStatus.textContent = text || fallback
+  if (els.watchPlayerStatus) {
+    els.watchPlayerStatus.textContent = playerText || (state.mpvAvailable ? t('watch.playerIdle') : t('watch.playerMissing'))
+  }
+  setPillKind(els.watchPlaybackStatus, kind)
+}
+
 function setLocale(locale) {
   state.locale = normalizeLocale(locale)
   localStorage.setItem('torrgether.locale', state.locale)
@@ -169,10 +216,10 @@ function setLocale(locale) {
   applyTranslations(document, state.locale)
   renderConnectionStatus()
   renderRole()
+  renderRoomSummary()
   renderMembers(state.members)
   updateVideoInfo()
   setMpvPreflight(state.mpvDetails)
-  updateSourceTabs()
   renderSourceResults(state.sourceResults)
   renderSelectedSource(state.selectedSourceResult)
   updateAppVersionLabel()
@@ -232,10 +279,15 @@ function renderConnectionStatus() {
   els.connectionStatus.textContent = t(key, params)
   els.connectionStatus.classList.remove('ok', 'warn', 'danger')
   els.connectionStatus.classList.add(kind)
+  if (els.watchConnectionStatus) {
+    els.watchConnectionStatus.textContent = t(key, params)
+    setPillKind(els.watchConnectionStatus, kind)
+  }
 }
 
 function renderRole() {
-  els.roleStatus.textContent = state.joined ? (state.isHost ? t('status.host') : t('status.viewer')) : '-'
+  els.roleStatus.textContent = roleLabel()
+  renderRoomSummary()
 }
 
 function setMpvPreflight(mpv) {
@@ -247,6 +299,7 @@ function setMpvPreflight(mpv) {
   if (!state.mpvAvailable && mpv) {
     els.mpvStatus.textContent = t('mpv.required')
   }
+  renderPlaybackStatus()
   updateActionState()
 }
 
@@ -387,8 +440,20 @@ async function torrentKey(payload) {
   if (!payload) return null
   const selected = payload.selectedFileIndex ?? ''
   if (payload.kind === 'magnet') return `magnet:${payload.magnetURI}:${selected}`
+  if (payload.kind === 'torrent-file' && payload.payloadId && !payload.base64) return `file-ref:${payload.payloadId}:${payload.version ?? ''}:${selected}`
   if (payload.kind === 'torrent-file') return `file:${payload.name}:${await sha256Hex(payload.base64)}:${selected}`
   return `payload:${await sha256Hex(JSON.stringify(payload))}`
+}
+
+async function resolveTorrentPayload(torrentPayload) {
+  if (torrentPayload?.kind !== 'torrent-file' || torrentPayload.base64 || !torrentPayload.payloadId) return torrentPayload
+  if (!window.torrgether.socketConnected()) throw new Error('Torrent payload is not available while disconnected')
+  const ack = await window.torrgether.emitTorrentPayloadGet({
+    version: torrentPayload.version,
+    payloadId: torrentPayload.payloadId
+  })
+  if (!ack.ok || !ack.torrent?.base64) throw new Error(ack.error || 'Torrent payload is missing')
+  return ack.torrent
 }
 
 function expectedRoomTime(roomState) {
@@ -413,6 +478,8 @@ function updateVideoInfo() {
   if (!state.currentTorrent) {
     els.videoTitle.textContent = t('player.noVideo')
     els.mkvHint.textContent = state.mpvAvailable ? t('player.chooseHint') : t('player.mpvMissingHint')
+    if (els.bufferStatus) els.bufferStatus.textContent = t('watch.emptyState')
+    renderPlaybackStatus({ text: t('watch.emptyState'), playerText: state.mpvAvailable ? t('watch.playerIdle') : t('watch.playerMissing') })
     updateActionState()
     return
   }
@@ -420,6 +487,8 @@ function updateVideoInfo() {
   const title = state.currentTorrent.selectedFileName || state.currentTorrent.name || t('player.selectedVideo')
   els.videoTitle.textContent = title
   els.mkvHint.textContent = t('player.selectedHint', { name: state.currentTorrent.selectedFileName || title })
+  if (els.bufferStatus) els.bufferStatus.textContent = t('watch.readyState')
+  renderPlaybackStatus({ text: t('watch.readyState'), playerText: state.mpvActive ? t('watch.playerExternal') : t('watch.playerIdle'), kind: 'ok' })
   updateActionState()
 }
 
@@ -478,6 +547,11 @@ async function startEmbeddedPlayer({ playing = false, time = 0, reason = 'fallba
 
   if (els.mpvStatus) els.mpvStatus.textContent = 'embedded player'
   if (announce) log(`Started embedded player (${reason}).`)
+  renderPlaybackStatus({
+    text: playing ? t('watch.playingState') : t('watch.playerFallbackState'),
+    playerText: t('watch.playerEmbedded'),
+    kind: playing ? 'ok' : 'warn'
+  })
   updateActionState()
   return true
 }
@@ -533,7 +607,7 @@ function ratingLabel(result) {
 function safePosterUrl(value) {
   try {
     const url = new URL(String(value || ''), window.location.href)
-    if (url.protocol === 'https:' || url.protocol === 'http:') return url.href
+    if (url.protocol === 'https:') return url.href
   } catch {}
   return 'https://archive.org/services/img/Sintel'
 }
@@ -608,7 +682,7 @@ function renderTorrentList(result) {
   button.type = 'button'
   button.textContent = t('buttons.import')
   button.disabled = !isPlayableResult(result)
-  button.addEventListener('click', () => importSelectedSource(result))
+  button?.addEventListener('click', () => importSelectedSource(result))
   row.append(info, button)
   els.torrentList.appendChild(row)
 }
@@ -637,7 +711,7 @@ function renderSourceResults(results = []) {
     img.loading = 'lazy'
     img.alt = ''
     img.src = safePosterUrl(result.posterUrl)
-    img.addEventListener('error', () => { img.src = safePosterUrl(null) }, { once: true })
+    img?.addEventListener('error', () => { img.src = safePosterUrl(null) }, { once: true })
     const score = document.createElement('span')
     score.className = 'poster-score'
     score.textContent = result.rating != null ? `★ ${ratingLabel(result)}` : (isPlayableResult(result) ? `↑ ${result.seeders ?? 0}` : '-')
@@ -649,7 +723,7 @@ function renderSourceResults(results = []) {
     meta.className = 'poster-meta'
     meta.textContent = resultMeta(result)
     button.append(thumb, title, meta)
-    button.addEventListener('click', () => renderSelectedSource(result))
+    button?.addEventListener('click', () => renderSelectedSource(result))
     els.sourceResults.appendChild(button)
   }
 
@@ -751,58 +825,104 @@ async function getActivePlayback() {
   }
 }
 
-async function applyPlayback(roomState) {
-  if (!state.currentTorrent) return
-  if (!roomState || roomState.seq < state.lastRemoteSeq) return
-  if (state.lastAppliedPlayback && state.lastAppliedPlayback.seq === roomState.seq) return
+function playbackDriftThreshold(roomState, source) {
+  if (source === 'snapshot') return 4.0
+  if (source === 'heartbeat' || roomState?.reason === 'heartbeat') return 2.0
+  return 0.75
+}
 
-  state.roomPlaybackState = roomState
-  state.lastRemoteSeq = roomState.seq
-  els.seqStatus.textContent = String(roomState.seq)
-  els.timeStatus.textContent = expectedRoomTime(roomState).toFixed(1)
+function isDuplicatePlaybackState(roomState, target) {
+  return Boolean(
+    state.lastAppliedPlayback &&
+    state.lastAppliedPlayback.seq === roomState.seq &&
+    state.lastAppliedPlayback.playing === Boolean(roomState.playing) &&
+    Math.abs((Number(state.lastAppliedPlayback.time) || 0) - target) < 0.25
+  )
+}
+
+async function applyPlayback(roomState, { source = 'control' } = {}) {
+  if (!roomState) return
+  if (roomState.seq < state.lastRemoteSeq) return
 
   const target = expectedRoomTime(roomState)
-  const driftThreshold = roomState.reason === 'heartbeat' ? 2.0 : 0.75
+  const duplicate = isDuplicatePlaybackState(roomState, target)
+  state.roomPlaybackState = roomState
+  state.lastRemoteSeq = Math.max(state.lastRemoteSeq, Number(roomState.seq) || 0)
+  els.seqStatus.textContent = String(roomState.seq)
+  els.timeStatus.textContent = target.toFixed(1)
+  renderRoomSummary()
+  renderPlaybackStatus({
+    text: roomState.playing ? t('watch.playingState') : t('watch.pausedState'),
+    playerText: isEmbeddedConnected() ? t('watch.playerEmbedded') : state.mpvActive ? t('watch.playerExternal') : t('watch.playerIdle'),
+    kind: roomState.playing ? 'ok' : 'neutral'
+  })
+
+  if (!state.currentTorrent || duplicate) return
+
+  const targetPlaying = Boolean(roomState.playing)
+  const driftThreshold = playbackDriftThreshold(roomState, source)
 
   if (!isMpvConnected()) {
-    if (isEmbeddedConnected() || canUseEmbeddedPlayer()) {
+    const embeddedConnected = isEmbeddedConnected()
+    const localTime = embeddedConnected ? Number(els.embeddedPlayer.currentTime) || 0 : 0
+    const localPlaying = embeddedConnected ? !els.embeddedPlayer.paused : false
+    const drift = Math.abs(localTime - target)
+    const pauseChanged = embeddedConnected ? localPlaying !== targetPlaying : true
+    const shouldStart = !embeddedConnected && canUseEmbeddedPlayer()
+    const shouldControl = shouldStart || pauseChanged || drift > driftThreshold
+
+    if (shouldControl && (embeddedConnected || shouldStart)) {
       state.suppressHostPoll = true
       try {
-        await startEmbeddedPlayer({
-          playing: Boolean(roomState.playing),
-          time: target,
-          reason: 'room sync',
-          announce: false
-        })
+        if (shouldStart) {
+          await startEmbeddedPlayer({
+            playing: targetPlaying,
+            time: target,
+            reason: 'room sync',
+            announce: false
+          })
+        } else {
+          await controlEmbeddedPlayer({
+            playing: pauseChanged ? targetPlaying : undefined,
+            time: drift > driftThreshold ? target : undefined,
+            hard: drift > driftThreshold
+          })
+        }
       } finally {
         state.suppressHostPoll = false
       }
     }
-    state.lastAppliedPlayback = { seq: roomState.seq, time: target, playing: Boolean(roomState.playing) }
+    state.lastAppliedPlayback = { seq: roomState.seq, time: target, playing: targetPlaying }
     return
   }
 
   const statusResult = await pollExternalPlayerStatus()
   const localTime = statusResult.ok ? Number(statusResult.status.timePos) || 0 : 0
+  const localPlaying = statusResult.ok ? !statusResult.status.pause : false
   const drift = Math.abs(localTime - target)
+  const pauseChanged = statusResult.ok ? localPlaying !== targetPlaying : true
+  if (!pauseChanged && drift <= driftThreshold) {
+    state.lastAppliedPlayback = { seq: roomState.seq, time: target, playing: targetPlaying }
+    return
+  }
 
   state.suppressHostPoll = true
   try {
     const result = await window.torrgether.controlExternalPlayer({
-      playing: Boolean(roomState.playing),
-      time: target,
+      playing: pauseChanged ? targetPlaying : undefined,
+      time: drift > driftThreshold ? target : undefined,
       hard: drift > driftThreshold
     })
     if (result.ok) state.externalStatus = result.status
   } finally {
     state.suppressHostPoll = false
   }
-  state.lastAppliedPlayback = { seq: roomState.seq, time: target, playing: Boolean(roomState.playing) }
+  state.lastAppliedPlayback = { seq: roomState.seq, time: target, playing: targetPlaying }
 }
 
 async function reportTorrentReady(torrentPayload, torrentResult) {
   if (!torrentPayload?.version || !window.torrgether.socketConnected()) return
-  const ack = await window.torrgether.socketEmitAck('torrent:ready', {
+  const ack = await window.torrgether.emitTorrentReady({
     version: torrentPayload.version,
     infoHash: torrentResult.infoHash,
     selectedFileIndex: torrentResult.selectedFileIndex
@@ -816,7 +936,7 @@ async function reportTorrentReady(torrentPayload, torrentResult) {
   if (typeof ack.isHost === 'boolean') {
     state.isHost = ack.isHost
     renderRole()
-    els.hostControls.classList.toggle('hidden', !state.isHost)
+    els.hostControls?.classList.toggle('hidden', !state.isHost)
     updateActionState()
   }
 }
@@ -824,6 +944,7 @@ async function reportTorrentReady(torrentPayload, torrentResult) {
 async function launchMpv(reason = 'manual') {
   if (state.launchInFlight) return
   if (!state.currentTorrent) return logT('log.chooseTorrentFirst')
+  renderPlaybackStatus({ text: t('watch.launchingState'), playerText: t('mpv.starting'), kind: 'warn' })
 
   if (!state.mpvAvailable) {
     const mpv = await refreshMpvPreflight({ announce: true })
@@ -833,6 +954,7 @@ async function launchMpv(reason = 'manual') {
         time: expectedRoomTime(state.roomPlaybackState),
         reason: 'MPV unavailable'
       })
+      renderPlaybackStatus({ text: t('watch.playerFallbackState'), playerText: t('watch.playerEmbedded'), kind: 'warn' })
       return
     }
   }
@@ -852,6 +974,7 @@ async function launchMpv(reason = 'manual') {
         time: target,
         reason: 'MPV launch failed'
       })
+      renderPlaybackStatus({ text: t('watch.playerFallbackState'), playerText: t('watch.playerEmbedded'), kind: 'warn' })
       return
     }
 
@@ -861,6 +984,7 @@ async function launchMpv(reason = 'manual') {
     state.lastExternalPoll = null
     renderMpvLogs({ logPath: result.status?.logPath, lines: result.status?.recentLogs })
     logT('log.mpvStarted', { reason })
+    renderPlaybackStatus({ text: playing ? t('watch.playingState') : t('watch.readyState'), playerText: t('watch.playerExternal'), kind: 'ok' })
     if (state.isHost) await emitHostControl('mpv:open', { playing, time: target })
   } finally {
     state.launchInFlight = false
@@ -890,9 +1014,20 @@ async function loadTorrentFromRoom(torrentPayload) {
   updateVideoInfo()
   logT('log.loadingTorrent', { name: torrentPayload.name || torrentPayload.kind })
 
+  let resolvedPayload
+  try {
+    resolvedPayload = await resolveTorrentPayload(torrentPayload)
+  } catch (err) {
+    if (generation === state.torrentLoadGeneration) {
+      logT('log.torrentError', { error: err.message || err })
+      updateActionState()
+    }
+    return
+  }
+
   const result = await window.torrgether.loadTorrent({
-    payload: torrentPayload,
-    selectedFileIndex: torrentPayload.selectedFileIndex
+    payload: resolvedPayload,
+    selectedFileIndex: resolvedPayload.selectedFileIndex
   })
 
   if (generation !== state.torrentLoadGeneration) return
@@ -906,7 +1041,7 @@ async function loadTorrentFromRoom(torrentPayload) {
   state.currentTorrent = result.torrent
   renderFileOptions(result.torrent)
   updateVideoInfo()
-  await reportTorrentReady(torrentPayload, result.torrent)
+  await reportTorrentReady(resolvedPayload, result.torrent)
 
   logT('log.readyForStreaming', { name: result.torrent.selectedFileName })
   await autoLaunchMpv('torrent loaded')
@@ -919,12 +1054,12 @@ async function applySnapshot(snapshot) {
   state.isHost = Boolean(snapshot.isHost)
   state.roomPlaybackState = snapshot.state || state.roomPlaybackState
   renderRole()
-  els.hostControls.classList.toggle('hidden', !state.isHost)
+  els.hostControls?.classList.toggle('hidden', !state.isHost)
   updateActionState()
   renderMembers(snapshot.members || [])
   if (snapshot.torrent) await loadTorrentFromRoom(snapshot.torrent)
   else clearCurrentTorrentState()
-  await applyPlayback(snapshot.state)
+  await applyPlayback(snapshot.state, { source: 'snapshot' })
 }
 
 function renderMembers(members) {
@@ -938,14 +1073,12 @@ function renderMembers(members) {
     li.textContent = `${member.name} - ${role} - ${member.online ? t('status.onlineWord') : t('status.offlineWord')} - ${ready}`
     els.members.appendChild(li)
   }
+  renderRoomSummary()
 }
 
 async function joinRoom() {
   state.roomId = els.roomId.value.trim() || 'demo-room'
-  if (state.joined && window.torrgether.socketConnected()) {
-    logT('log.alreadyJoined', { room: state.roomId })
-    return
-  }
+  renderRoomSummary()
   let url
   try {
     url = normalizeServerUrl(els.serverUrl.value)
@@ -955,30 +1088,48 @@ async function joinRoom() {
     logT('log.badSignalingUrl', { message: err.message })
     return
   }
+  const roomKey = `${url}|${state.roomId}|${state.clientId}`
+  if (state.joined && state.activeRoomKey === roomKey && window.torrgether.socketConnected()) {
+    logT('log.alreadyJoined', { room: state.roomId })
+    return
+  }
+  if (state.joinInFlight && state.activeRoomKey === roomKey) return
+  state.activeRoomKey = roomKey
+  state.joined = false
+  state.joinedSocketId = null
   const serverToken = els.serverToken?.value.trim() || ''
 
   window.torrgether.connectSocket(url, {
     auth: { clientId: state.clientId, serverToken }
   })
 
-  let joinedSocketId = null
   const joinCurrentSocket = async () => {
     setConnectionKey('status.online', { id: window.torrgether.socketId() }, 'ok')
     const socketId = window.torrgether.socketId()
-    if (joinedSocketId === socketId) return
-    joinedSocketId = socketId
-    const ack = await window.torrgether.socketEmitAck('room:join', {
-      roomId: state.roomId,
-      clientId: state.clientId,
-      name: els.displayName.value.trim() || t('room.defaultName')
-    })
-    if (ack.ok) {
-      state.joined = true
-      await applySnapshot(ack.snapshot)
-      logT('log.joinedRoom', { room: state.roomId })
-    } else {
-      joinedSocketId = null
-      logT('log.joinFailed', { error: ack.error })
+    if (!socketId || state.joinedSocketId === socketId || state.joinInFlight) return
+    state.joinedSocketId = socketId
+    state.joinInFlight = true
+    try {
+      const ack = await window.torrgether.emitRoomJoin({
+        roomId: state.roomId,
+        clientId: state.clientId,
+        name: els.displayName?.value.trim() || t('room.defaultName')
+      })
+      if (ack.ok) {
+        state.joined = true
+        await applySnapshot(ack.snapshot)
+        logT('log.joinedRoom', { room: state.roomId })
+      } else {
+        state.joined = false
+        state.joinedSocketId = null
+        logT('log.joinFailed', { error: ack.error })
+      }
+    } catch (err) {
+      state.joined = false
+      state.joinedSocketId = null
+      logT('log.joinFailed', { error: err.message || err })
+    } finally {
+      state.joinInFlight = false
     }
   }
 
@@ -986,6 +1137,7 @@ async function joinRoom() {
 
   window.torrgether.socketOn('disconnect', reason => {
     setConnectionKey('status.offlineReason', { reason }, 'warn')
+    state.joinInFlight = false
     logT('log.connectionLost', { reason })
   })
 
@@ -1001,7 +1153,7 @@ async function joinRoom() {
   })
   window.torrgether.socketOn('control:state', async roomState => {
     state.roomPlaybackState = roomState
-    if (!state.isHost) await applyPlayback(roomState)
+    if (!state.isHost) await applyPlayback(roomState, { source: roomState?.reason === 'heartbeat' ? 'heartbeat' : 'control' })
   })
 
   if (window.torrgether.socketConnected()) await joinCurrentSocket()
@@ -1032,12 +1184,13 @@ async function hostSetTorrentPayload(payload) {
   renderFileOptions(localLoad.torrent)
   updateVideoInfo()
 
-  const ack = await window.torrgether.socketEmitAck('torrent:set', { torrent: roomPayload })
+  const ack = await window.torrgether.emitTorrentSet({ torrent: roomPayload })
   if (!ack.ok) return logT('log.serverRejected', { error: ack.error })
 
+  if (ack.torrent) state.torrentPayloadKey = await torrentKey(ack.torrent)
   if (ack.torrentVersion) {
     state.roomPlaybackState = { seq: state.lastRemoteSeq + 1, playing: false, time: 0, updatedAt: Date.now(), reason: 'torrent:set' }
-    await window.torrgether.socketEmitAck('torrent:ready', {
+    await window.torrgether.emitTorrentReady({
       version: ack.torrentVersion,
       infoHash: localLoad.torrent.infoHash,
       selectedFileIndex: localLoad.torrent.selectedFileIndex
@@ -1055,7 +1208,7 @@ async function emitHostControl(reason, override = {}) {
   const playing = typeof override.playing === 'boolean' ? override.playing : active.playing
   const time = Number.isFinite(Number(override.time)) ? Number(override.time) : active.time
 
-  const ack = await window.torrgether.socketEmitAck('control:set', {
+  const ack = await window.torrgether.emitControlSet({
     playing,
     time,
     reason
@@ -1118,34 +1271,17 @@ async function toggleMpv() {
   })
 }
 
-function updateSourceTabs() {
-  const showRutracker = state.sourceTab === 'rutracker'
-  const showManual = state.sourceTab === 'manual'
-  const showCatalog = state.sourceTab === 'catalog'
-  els.catalogSourceTab?.classList.toggle('active', showCatalog)
-  els.manualSourceTab?.classList.toggle('active', showManual)
-  els.rutrackerSourceTab?.classList.toggle('active', showRutracker)
-  els.catalogSourcePanel?.classList.toggle('hidden', !showCatalog)
-  els.manualSourcePanel?.classList.toggle('hidden', !showManual)
-  els.rutrackerPanel?.classList.toggle('hidden', !showRutracker)
-  if (showRutracker && state.rutrackerVisible) scheduleRutrackerBoundsUpdate()
-  if (!showRutracker && els.rutrackerPanel) hideRutrackerView()
-}
-
 function switchWorkspace(tab) {
-  state.workspaceTab = tab === 'room' ? 'room' : tab === 'settings' ? 'settings' : 'watch'
-  document.getElementById('watchWorkspace')?.classList.toggle('hidden', state.workspaceTab !== 'watch')
-  document.getElementById('roomWorkspace')?.classList.toggle('hidden', state.workspaceTab !== 'room')
-  document.getElementById('settingsWorkspace')?.classList.toggle('hidden', state.workspaceTab !== 'settings')
-  document.querySelectorAll('.nav-item').forEach((el, index) => {
-    const tabs = ['watch', 'room', 'settings']
-    el.classList.toggle('active', tabs[index] === state.workspaceTab)
+  state.workspaceTab = tab === 'watch' ? 'watch' : tab === 'settings' ? 'settings' : 'home'
+  els.homeWorkspace?.classList.toggle('hidden', state.workspaceTab !== 'home')
+  els.watchWorkspace?.classList.toggle('hidden', state.workspaceTab !== 'watch')
+  els.settingsWorkspace?.classList.toggle('hidden', state.workspaceTab !== 'settings')
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.workspace === state.workspaceTab)
   })
-}
-
-function setSourceTab(tab) {
-  state.sourceTab = tab === 'rutracker' ? 'rutracker' : tab === 'manual' ? 'manual' : 'catalog'
-  updateSourceTabs()
+  if (state.workspaceTab !== 'settings' && state.rutrackerVisible) hideRutrackerView()
+  renderRoomSummary()
+  renderPlaybackStatus()
 }
 
 function viewportBounds() {
@@ -1170,9 +1306,8 @@ function scheduleRutrackerBoundsUpdate() {
 }
 
 async function showRutrackerView() {
-  state.sourceTab = 'rutracker'
+  switchWorkspace('settings')
   state.rutrackerVisible = true
-  updateSourceTabs()
   const result = await window.torrgether.showRutracker()
   if (!result.ok) {
     els.rutrackerStatus.textContent = t('rutracker.error', { error: result.error })
@@ -1200,30 +1335,20 @@ async function importFromRutracker(imported) {
 
 els.languageSelect?.addEventListener('change', () => setLocale(els.languageSelect.value))
 els.contentLanguageSelect?.addEventListener('change', () => setContentLanguage(els.contentLanguageSelect.value))
+els.roomId?.addEventListener('input', renderRoomSummary)
+els.displayName?.addEventListener('input', renderRoomSummary)
 document.querySelectorAll('[data-i18n-value]').forEach(el => {
-  el.addEventListener('input', () => { el.dataset.userEdited = 'true' })
+  el?.addEventListener('input', () => { el.dataset.userEdited = 'true' })
 })
 
 els.joinBtn?.addEventListener('click', joinRoom)
-els.catalogSourceTab?.addEventListener('click', () => setSourceTab('catalog'))
-els.manualSourceTab?.addEventListener('click', () => setSourceTab('manual'))
-els.rutrackerSourceTab?.addEventListener('click', () => showRutrackerView())
 els.themeToggleBtn?.addEventListener('click', () => applyTheme(state.theme === 'dark' ? 'light' : 'dark'))
-document.querySelectorAll('.nav-item').forEach((el, index) => {
-  const tabs = ['watch', 'room', 'settings']
-  el.addEventListener('click', () => switchWorkspace(tabs[index]))
+document.querySelectorAll('.nav-item').forEach(el => {
+  el?.addEventListener('click', () => switchWorkspace(el.dataset.workspace))
 })
 document.querySelectorAll('[data-media-filter]').forEach(button => {
   button.classList.toggle('active', button.dataset.mediaFilter === state.mediaType)
-  button.addEventListener('click', () => setMediaType(button.dataset.mediaFilter))
-})
-document.querySelectorAll('[data-panel-tab]').forEach(button => {
-  button.addEventListener('click', () => {
-    const target = button.dataset.panelTab
-    document.querySelectorAll('[data-panel-tab]').forEach(item => item.classList.toggle('active', item === button))
-    document.getElementById('rightTorrentsPanel')?.classList.toggle('hidden', target !== 'torrents')
-    document.getElementById('rightInfoPanel')?.classList.toggle('hidden', target !== 'info')
-  })
+  button?.addEventListener('click', () => setMediaType(button.dataset.mediaFilter))
 })
 els.sourceSearchBtn?.addEventListener('click', () => scheduleSearchCatalog(0))
 els.sourceSearchInput?.addEventListener('keydown', event => {
@@ -1301,11 +1426,12 @@ els.fileSelect?.addEventListener('change', async () => {
     }
     updateVideoInfo()
 
-    const ack = await window.torrgether.socketEmitAck('torrent:file-selected', { selectedFileIndex })
+    const ack = await window.torrgether.emitTorrentFileSelected({ selectedFileIndex })
     if (!ack.ok) return log(ack.error)
+    if (ack.torrent) state.torrentPayloadKey = await torrentKey(ack.torrent)
     if (ack.torrentVersion) {
       state.roomPlaybackState = { seq: state.lastRemoteSeq + 1, playing: false, time: 0, updatedAt: Date.now(), reason: 'torrent:file-selected' }
-      await window.torrgether.socketEmitAck('torrent:ready', {
+      await window.torrgether.emitTorrentReady({
         version: ack.torrentVersion,
         infoHash: state.currentTorrent.infoHash,
         selectedFileIndex
@@ -1317,17 +1443,17 @@ els.fileSelect?.addEventListener('change', async () => {
   }
 })
 
-els.openMpvBtn.addEventListener('click', () => withButtonBusy(els.openMpvBtn, 'buttons.opening', () => launchMpv('manual restart')))
-els.mpvToggleBtn.addEventListener('click', toggleMpv)
-els.mpvBackBtn.addEventListener('click', () => controlMpvRelative(-10))
-els.mpvForwardBtn.addEventListener('click', () => controlMpvRelative(10))
-els.showMpvLogsBtn.addEventListener('click', refreshMpvLogs)
+els.openMpvBtn?.addEventListener('click', () => withButtonBusy(els.openMpvBtn, 'buttons.opening', () => launchMpv('manual restart')))
+els.mpvToggleBtn?.addEventListener('click', toggleMpv)
+els.mpvBackBtn?.addEventListener('click', () => controlMpvRelative(-10))
+els.mpvForwardBtn?.addEventListener('click', () => controlMpvRelative(10))
+els.showMpvLogsBtn?.addEventListener('click', refreshMpvLogs)
 els.openLogsFolderBtn?.addEventListener('click', async () => {
   const result = await window.torrgether.openLogsFolder()
   if (!result.ok) logT('log.openLogsFailed', { error: result.error })
 })
 
-els.mpvStopBtn.addEventListener('click', async () => {
+els.mpvStopBtn?.addEventListener('click', async () => {
   await withButtonBusy(els.mpvStopBtn, 'buttons.stopping', async () => {
     await window.torrgether.stopExternalPlayer()
     stopEmbeddedPlayer()
@@ -1341,6 +1467,7 @@ els.mpvStopBtn.addEventListener('click', async () => {
 els.embeddedPlayer?.addEventListener('play', () => {
   state.embeddedActive = true
   if (els.mpvStatus) els.mpvStatus.textContent = 'embedded player'
+  renderPlaybackStatus({ text: t('watch.playingState'), playerText: t('watch.playerEmbedded'), kind: 'ok' })
   updateActionState()
   if (state.isHost && !suppressEmbeddedEvents && !state.suppressHostPoll) {
     emitHostControl('embedded:play', { playing: true, time: Number(els.embeddedPlayer.currentTime) || 0 }).catch(err => log(err.message || err))
@@ -1348,6 +1475,7 @@ els.embeddedPlayer?.addEventListener('play', () => {
 })
 els.embeddedPlayer?.addEventListener('pause', () => {
   if (els.mpvStatus && state.embeddedActive) els.mpvStatus.textContent = 'embedded paused'
+  if (state.embeddedActive) renderPlaybackStatus({ text: t('watch.pausedState'), playerText: t('watch.playerEmbedded') })
   updateActionState()
   if (state.isHost && !suppressEmbeddedEvents && !state.suppressHostPoll && state.embeddedActive) {
     emitHostControl('embedded:pause', { playing: false, time: Number(els.embeddedPlayer.currentTime) || 0 }).catch(err => log(err.message || err))
@@ -1360,15 +1488,17 @@ els.embeddedPlayer?.addEventListener('seeked', () => {
 })
 els.embeddedPlayer?.addEventListener('ended', () => {
   state.embeddedActive = false
+  renderPlaybackStatus({ text: t('watch.readyState'), playerText: t('watch.playerIdle') })
   updateActionState()
 })
 els.embeddedPlayer?.addEventListener('error', () => {
   const error = els.embeddedPlayer.error
   log(`Embedded player failed${error?.code ? ` (code ${error.code})` : ''}; try MPV for this file.`)
+  renderPlaybackStatus({ text: t('watch.playerErrorState'), playerText: t('watch.playerEmbedded'), kind: 'danger' })
 })
 
-window.addEventListener('resize', scheduleRutrackerBoundsUpdate)
-window.addEventListener('scroll', scheduleRutrackerBoundsUpdate, true)
+window?.addEventListener('resize', scheduleRutrackerBoundsUpdate)
+window?.addEventListener('scroll', scheduleRutrackerBoundsUpdate, true)
 if (window.ResizeObserver && els.rutrackerViewport) {
   new ResizeObserver(scheduleRutrackerBoundsUpdate).observe(els.rutrackerViewport)
 }
@@ -1379,7 +1509,7 @@ registerInterval(async () => {
   state.heartbeatInFlight = true
   try {
     const active = await getActivePlayback()
-    window.torrgether.socketEmit('host:heartbeat', {
+    window.torrgether.emitHostHeartbeat({
       playing: active.playing,
       time: active.time
     })
@@ -1416,23 +1546,19 @@ registerInterval(async () => {
     setBar(els.progressBar, progress)
     setBar(els.ramBar, ramPercent)
 
-    const mpvText = status.mpvCacheText || t('stream.mpvCacheEmpty')
-    const overLimitText = Number(status.ramOverLimitBytes || 0) > 0 ? t('stream.overLimit', { over: mib(status.ramOverLimitBytes) }) : ''
     const lowCache = Number(status.lowCacheEvents || 0) > 0 && Number.isFinite(mpvCacheSeconds) && mpvCacheSeconds < 1
-    const cacheText = t('stream.cacheSummary', {
-      used: mib(ramBytes),
-      max: mib(ramMaxBytes),
-      chunks: status.ramChunks ?? 'n/a',
-      recent: status.ramRecentEvictions ?? 0,
-      piece: mib(status.pieceLength),
-      mpv: mpvText
-    })
-    if (els.ramShortStatus) els.ramShortStatus.textContent = `${ramPercent.toFixed(0)}%`
+    if (els.ramShortStatus) els.ramShortStatus.textContent = `${mib(ramBytes)} / ${mib(ramMaxBytes)} (${ramPercent.toFixed(0)}%)`
     if (els.cachePressureStatus) els.cachePressureStatus.textContent = lowCache ? t('stream.starved') : t(pressureKey)
     if (els.evictionStatus) els.evictionStatus.textContent = String(status.ramEvictions ?? 0)
     if (els.refetchStatus) els.refetchStatus.textContent = String(status.ramRecoveries ?? 0)
     if (els.pendingStatus) els.pendingStatus.textContent = `${status.ramPendingReads ?? 0}/${status.ramMaxPendingReads ?? 'n/a'}`
-    els.bufferStatus.textContent = `${progress.toFixed(2)}%, ${cacheText}${overLimitText}${lowCache ? t('stream.lowMpvBuffer') : ''}`
+    const watchState = lowCache ? t('watch.bufferingState') : progress > 0 ? t('watch.readyState') : t('watch.loadingState')
+    els.bufferStatus.textContent = `${watchState} - ${progress.toFixed(0)}%`
+    renderPlaybackStatus({
+      text: watchState,
+      playerText: isEmbeddedConnected() ? t('watch.playerEmbedded') : state.mpvActive ? t('watch.playerExternal') : t('watch.playerIdle'),
+      kind: lowCache ? 'warn' : 'ok'
+    })
   } catch (err) {
     logT('log.statusFailed', { error: err.message || err })
   } finally {
@@ -1445,6 +1571,11 @@ registerInterval(async () => {
     const time = Number(els.embeddedPlayer?.currentTime) || 0
     els.mpvStatus.textContent = els.embeddedPlayer?.paused ? 'embedded paused' : `embedded playing, ${time.toFixed(1)}s`
     els.timeStatus.textContent = time.toFixed(1)
+    renderPlaybackStatus({
+      text: els.embeddedPlayer?.paused ? t('watch.pausedState') : t('watch.playingState'),
+      playerText: t('watch.playerEmbedded'),
+      kind: els.embeddedPlayer?.paused ? 'neutral' : 'ok'
+    })
     updateActionState()
     return
   }
@@ -1456,6 +1587,7 @@ registerInterval(async () => {
     if (!result.ok) {
       els.mpvStatus.textContent = result.error
       if (result.status?.recentLogs) renderMpvLogs({ lines: result.status.recentLogs, logPath: result.status.logPath })
+      renderPlaybackStatus({ text: t('watch.playerErrorState'), playerText: result.error, kind: 'danger' })
       return
     }
 
@@ -1466,6 +1598,11 @@ registerInterval(async () => {
       ? `${st.pause ? t('mpv.paused') : t('mpv.playing')}, ${Number(st.timePos || 0).toFixed(1)}s${mpvCacheSuffix}`
       : st.running ? t('mpv.starting') : t('mpv.notRunning')
     els.timeStatus.textContent = Number(st.timePos || 0).toFixed(1)
+    renderPlaybackStatus({
+      text: st.connected ? (st.pause ? t('watch.pausedState') : t('watch.playingState')) : st.running ? t('watch.launchingState') : t('watch.readyState'),
+      playerText: st.connected ? t('watch.playerExternal') : st.running ? t('mpv.starting') : t('mpv.notRunning'),
+      kind: st.connected && !st.pause ? 'ok' : st.running ? 'warn' : 'neutral'
+    })
 
     if (!st.connected && !st.running) {
       state.mpvActive = false
@@ -1514,8 +1651,11 @@ window.torrgether.onRutrackerStatus(payload => {
 })
 
 setLocale(state.locale)
+switchWorkspace(state.workspaceTab)
 if (els.contentLanguageSelect) els.contentLanguageSelect.value = state.contentLanguage
 applyClientConfig().then(() => updateVideoInfo())
 scheduleSearchCatalog(0)
 checkForUpdates({ quiet: true }).catch(() => {})
 updateActionState()
+renderRoomSummary()
+renderPlaybackStatus()

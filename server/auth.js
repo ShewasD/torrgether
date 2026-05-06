@@ -11,7 +11,7 @@ function tokenValue(value) {
 
 export function tokenFromHandshake(handshake = {}) {
   const authorization = tokenValue(handshake.headers?.['authorization'])
-  const bearerMatch = /^Bearer\s+(\S+)$/i.exec(authorization)
+  const bearerMatch = /^Bearer\s+([A-Za-z0-9\-._~+/]+=*)$/i.exec(authorization)
   const bearerToken = bearerMatch ? bearerMatch[1] : ''
   return (
     tokenValue(handshake.auth?.serverToken) ||
@@ -76,7 +76,7 @@ export function createAuthRateLimiter({
 
   function getEntry(key) {
     const current = now()
-    if (attempts.size >= maxEntries) cleanupExpired(current)
+    cleanupExpired(current)
     const existing = attempts.get(key)
     if (!existing || current >= existing.resetAt) {
       const next = { count: 0, resetAt: current + windowMs }

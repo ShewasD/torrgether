@@ -131,7 +131,7 @@ function imageUrl(value) {
   if (!raw) return ''
   try {
     const url = new URL(raw)
-    return (url.protocol === 'http:' || url.protocol === 'https:') ? url.href : ''
+    return url.protocol === 'https:' ? url.href : ''
   } catch {
     return ''
   }
@@ -237,8 +237,19 @@ function limitedRows(options = {}) {
   return Math.max(1, Math.min(50, Number.isFinite(value) ? value : DEFAULT_CATALOG_LIMIT))
 }
 
+function escapeArchiveSearchTerms(value) {
+  return cleanText(value, 'public domain movie')
+    .split(/\s+/)
+    .map(term => term
+      .replace(/&&/g, '\\&&')
+      .replace(/\|\|/g, '\\||')
+      .replace(/([+\-!(){}[\]^"~*?:\\/])/g, '\\$1'))
+    .filter(Boolean)
+    .join(' ') || 'public domain movie'
+}
+
 function archiveSearchUrl(query, rows = 12) {
-  const terms = cleanText(query, 'public domain movie').replace(/"/g, '')
+  const terms = escapeArchiveSearchTerms(query)
   const params = new URLSearchParams({
     q: `mediatype:movies AND (${terms})`,
     fl: 'identifier,title,year,description,language,downloads,subject',
@@ -397,34 +408,43 @@ export async function searchJikanAnime(query = '', filters = {}, fetchImpl = glo
 export async function searchCatalog(query = '', filters = {}, fetchImpl = globalThis.fetch, options = {}) {
   const requestedLanguage = normalizeContentLanguage(filters.language)
   const mediaType = normalizeMediaType(filters.mediaType)
-  const warnings = []
   const providerOptions = {
     limit: options.limit ?? DEFAULT_CATALOG_LIMIT,
     timeoutMs: options.timeoutMs ?? DEFAULT_SEARCH_TIMEOUT_MS
   }
-  const tasks = []
 
-  if (mediaType === 'all' || mediaType === 'movie') tasks.push(['archive.org', () => searchArchiveOrg(query, filters, fetchImpl, providerOptions)])
-  if (mediaType === 'all' || mediaType === 'series') tasks.push(['tvmaze', () => searchTvMaze(query, filters, fetchImpl, providerOptions)])
-  if (mediaType === 'all' || mediaType === 'anime') tasks.push(['jikan', () => searchJikanAnime(query, filters, fetchImpl, providerOptions)])
+  const runSearch = async searchFilters => {
+    const warnings = []
+    const tasks = []
 
-  const results = []
-  await Promise.all(tasks.map(async ([providerId, task]) => {
-    try {
-      const taskResults = await task()
-      for (const r of taskResults) results.push(r)
-    } catch (err) {
-      warnings.push({ providerId, message: err.message || String(err) })
+    if (mediaType === 'all' || mediaType === 'movie') tasks.push(['archive.org', () => searchArchiveOrg(query, searchFilters, fetchImpl, providerOptions)])
+    if (mediaType === 'all' || mediaType === 'series') tasks.push(['tvmaze', () => searchTvMaze(query, searchFilters, fetchImpl, providerOptions)])
+    if (mediaType === 'all' || mediaType === 'anime') tasks.push(['jikan', () => searchJikanAnime(query, searchFilters, fetchImpl, providerOptions)])
+
+    const results = []
+    await Promise.all(tasks.map(async ([providerId, task]) => {
+      try {
+        const taskResults = await task()
+        for (const r of taskResults) results.push(r)
+      } catch (err) {
+        warnings.push({ providerId, message: err.message || String(err) })
+      }
+    }))
+
+    return {
+      warnings,
+      normalized: dedupeSourceResults([...searchOpenCatalog(query, searchFilters), ...results])
     }
-  }))
+  }
 
-  let normalized = dedupeSourceResults([...searchOpenCatalog(query, filters), ...results])
+  let { normalized, warnings } = await runSearch(filters)
   let languageFallback = false
 
   if (requestedLanguage !== DEFAULT_CONTENT_LANGUAGE && normalized.length === 0) {
     languageFallback = true
-    return searchCatalog(query, { ...filters, language: DEFAULT_CONTENT_LANGUAGE, mediaType }, fetchImpl, options)
-      .then(response => ({ ...response, requestedLanguage, languageFallback: true, providerWarnings: [...warnings, ...(response.providerWarnings || [])] }))
+    const fallback = await runSearch({ ...filters, language: DEFAULT_CONTENT_LANGUAGE, mediaType })
+    normalized = fallback.normalized
+    warnings = [...warnings, ...fallback.warnings]
   }
 
   normalized = normalized.slice(0, limitedRows(providerOptions))
@@ -444,6 +464,30 @@ export async function searchSources(query = '', filters = {}, fetchImpl = global
   return searchCatalog(query, filters, fetchImpl, options)
 }
 
+function isBlockedHostname(hostname) {
+  const host = String(hostname || '').toLowerCase()
+  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true
+
+  const ipv4 = host.match(/^(\d{1,3})(?:\.(\d{1,3})){3}$/)
+  if (ipv4) {
+    const parts = host.split('.').map(Number)
+    if (parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return true
+    const [a, b] = parts
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+  }
+
+  const ipv6 = host.replace(/^\[|\]$/g, '')
+  return ipv6 === '::1' || ipv6.startsWith('fc') || ipv6.startsWith('fd') || ipv6.startsWith('fe80:')
+}
+
+export function validateTorrentUrl(value) {
+  const url = new URL(String(value || '').trim())
+  if (url.protocol !== 'https:') throw new Error('Only HTTPS torrent URLs are allowed')
+  if (url.username || url.password) throw new Error('Torrent URLs must not contain credentials')
+  if (isBlockedHostname(url.hostname)) throw new Error('Torrent source host is not allowed')
+  return url.href
+}
+
 export async function fetchSourceTorrent(result, fetchImpl = globalThis.fetch, { maxBytes = 10 * 1024 * 1024, timeoutMs = 30_000 } = {}) {
   const normalized = normalizeSourceResult(result)
   if (!normalized) throw new Error('Invalid source result')
@@ -454,7 +498,8 @@ export async function fetchSourceTorrent(result, fetchImpl = globalThis.fetch, {
   }
   if (!playable.torrentUrl) throw new Error('This catalog result does not expose a legal torrent or magnet source')
   if (typeof fetchImpl !== 'function') throw new Error('fetch is not available')
-  const response = await fetchWithTimeout(fetchImpl, playable.torrentUrl, {
+  const torrentUrl = validateTorrentUrl(playable.torrentUrl)
+  const response = await fetchWithTimeout(fetchImpl, torrentUrl, {
     headers: { 'User-Agent': 'Torrgether torrent importer' }
   }, timeoutMs)
   if (!response.ok) throw new Error(`Torrent download returned HTTP ${response.status}`)

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createAuthRateLimiter, createTokenAuthMiddleware, isServerTokenAuthorized, safeTokenEqual, tokenFromHandshake } from '../server/auth.js'
-import { MAX_CLIENT_ID_LENGTH, createSocketIoOptions, normalizeClientId } from '../server/server.js'
+import { MAX_CLIENT_ID_LENGTH, createSocketIoOptions, decodedBase64Bytes, normalizeClientId, normalizeDisplayName, normalizeRoomId } from '../server/server.js'
 
 test('allows all sockets when server token is not configured', () => {
   assert.equal(isServerTokenAuthorized('', {}), true)
@@ -55,23 +55,62 @@ test('validates clientId length and emptiness', () => {
   assert.equal(normalizeClientId('a'.repeat(MAX_CLIENT_ID_LENGTH + 1)), null)
 })
 
+test('validates room ids and display names', () => {
+  assert.equal(normalizeRoomId(' room_a-1 '), 'room_a-1')
+  assert.equal(normalizeRoomId('bad room'), null)
+  assert.equal(normalizeRoomId('../bad'), null)
+  assert.equal(normalizeDisplayName(' Alice\u0000\n Bob '), 'Alice Bob')
+})
+
+test('estimates decoded base64 payload bytes without allocating decoded buffers', () => {
+  assert.equal(decodedBase64Bytes(Buffer.from([1, 2, 3, 4]).toString('base64')), 4)
+  assert.equal(decodedBase64Bytes(''), 0)
+})
+
 test('auth rate limiter bounds invalid attempts without storing raw tokens', () => {
+  const previousTrustProxy = process.env.TRUST_PROXY
+  delete process.env.TRUST_PROXY
   let time = 1000
-  const limiter = createAuthRateLimiter({
-    maxAttempts: 2,
-    windowMs: 100,
-    now: () => time
-  })
-  const handshake = { address: '127.0.0.1', auth: { serverToken: 'wrong-secret' } }
+  try {
+    const limiter = createAuthRateLimiter({
+      maxAttempts: 2,
+      windowMs: 100,
+      now: () => time
+    })
+    const handshake = { address: '127.0.0.1', auth: { serverToken: 'wrong-secret' } }
 
-  assert.equal(limiter.isLimited(handshake), false)
-  assert.equal(limiter.recordFailure(handshake).count, 1)
-  assert.equal(limiter.recordFailure(handshake).limited, true)
-  assert.equal(limiter.isLimited(handshake), true)
-  assert.equal(limiter.size(), 1)
+    assert.equal(limiter.isLimited(handshake), false)
+    assert.equal(limiter.recordFailure(handshake).count, 1)
+    assert.equal(limiter.recordFailure(handshake).limited, true)
+    assert.equal(limiter.isLimited(handshake), true)
+    assert.equal(limiter.size(), 1)
 
-  time += 101
-  assert.equal(limiter.isLimited(handshake), false)
+    time += 101
+    assert.equal(limiter.isLimited(handshake), false)
+  } finally {
+    if (previousTrustProxy == null) delete process.env.TRUST_PROXY
+    else process.env.TRUST_PROXY = previousTrustProxy
+  }
+})
+
+test('auth rate limiter trusts x-forwarded-for only when TRUST_PROXY is enabled', () => {
+  const previousTrustProxy = process.env.TRUST_PROXY
+  try {
+    delete process.env.TRUST_PROXY
+    const directLimiter = createAuthRateLimiter({ maxAttempts: 1, windowMs: 1000 })
+    const first = { address: '10.0.0.10', headers: { 'x-forwarded-for': '198.51.100.1' }, auth: { serverToken: 'wrong' } }
+    const second = { address: '10.0.0.10', headers: { 'x-forwarded-for': '198.51.100.2' }, auth: { serverToken: 'wrong' } }
+    directLimiter.recordFailure(first)
+    assert.equal(directLimiter.isLimited(second), true)
+
+    process.env.TRUST_PROXY = '1'
+    const proxyLimiter = createAuthRateLimiter({ maxAttempts: 1, windowMs: 1000 })
+    proxyLimiter.recordFailure(first)
+    assert.equal(proxyLimiter.isLimited(second), false)
+  } finally {
+    if (previousTrustProxy == null) delete process.env.TRUST_PROXY
+    else process.env.TRUST_PROXY = previousTrustProxy
+  }
 })
 
 test('auth rate limiter cleans expired entries and caps total keys', () => {

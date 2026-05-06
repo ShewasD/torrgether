@@ -150,6 +150,51 @@ test('host failover emits per-client snapshot with correct isHost', async t => {
   assert.equal(failoverSnapshot.members.find(member => member.clientId === 'viewer-client')?.isHost, true)
 })
 
+test('host reconnecting during grace keeps host role', async t => {
+  const server = await createTestServer({ hostGraceMs: 120 })
+  const host = await connectSocket(serverUrl(server))
+  const viewer = await connectSocket(serverUrl(server))
+  let hostReconnect = null
+  t.after(async () => {
+    host.disconnect()
+    hostReconnect?.disconnect()
+    viewer.disconnect()
+    await server.close()
+  })
+
+  const hostAck = await emitAck(host, 'room:join', {
+    roomId: 'failover-reconnect',
+    clientId: 'host-client',
+    name: 'Host'
+  })
+  assert.equal(hostAck.snapshot.isHost, true)
+
+  const viewerAck = await emitAck(viewer, 'room:join', {
+    roomId: 'failover-reconnect',
+    clientId: 'viewer-client',
+    name: 'Viewer'
+  })
+  assert.equal(viewerAck.snapshot.isHost, false)
+
+  const viewerSnapshots = []
+  viewer.on('room:snapshot', snapshot => viewerSnapshots.push(snapshot))
+  host.disconnect()
+
+  hostReconnect = await connectSocket(serverUrl(server))
+  const reconnectAck = await emitAck(hostReconnect, 'room:join', {
+    roomId: 'failover-reconnect',
+    clientId: 'host-client',
+    name: 'Host'
+  })
+  assert.equal(reconnectAck.snapshot.isHost, true)
+
+  const failoverSnapshot = await waitFor(
+    () => viewerSnapshots.find(snapshot => snapshot.hostClientId === 'viewer-client' && snapshot.isHost),
+    250
+  )
+  assert.equal(failoverSnapshot, null)
+})
+
 test('auth rate limiting rejects repeated invalid Socket.IO connections', async t => {
   const server = await createTestServer({
     authRateLimitMaxAttempts: 1,
@@ -191,6 +236,103 @@ test('server rejects oversized torrent-file signaling payloads', async t => {
 
   assert.equal(ack.ok, false)
   assert.match(ack.error, /too large/)
+})
+
+test('server keeps torrent-file base64 out of room snapshots and serves it on demand', async t => {
+  const server = await createTestServer()
+  const host = await connectSocket(serverUrl(server))
+  const viewer = await connectSocket(serverUrl(server))
+  t.after(async () => {
+    host.disconnect()
+    viewer.disconnect()
+    await server.close()
+  })
+
+  const hostAck = await emitAck(host, 'room:join', {
+    roomId: 'payload-ref',
+    clientId: 'host-client',
+    name: 'Host'
+  })
+  assert.equal(hostAck.snapshot.isHost, true)
+
+  const viewerAck = await emitAck(viewer, 'room:join', {
+    roomId: 'payload-ref',
+    clientId: 'viewer-client',
+    name: 'Viewer'
+  })
+  assert.equal(viewerAck.ok, true)
+
+  const updates = []
+  viewer.on('torrent:update', torrent => updates.push(torrent))
+  const base64 = Buffer.from([1, 2, 3, 4]).toString('base64')
+  const setAck = await emitAck(host, 'torrent:set', {
+    torrent: {
+      kind: 'torrent-file',
+      name: 'demo.torrent',
+      base64
+    }
+  })
+  assert.equal(setAck.ok, true)
+
+  const update = await waitFor(() => updates[0], 1000)
+  assert.ok(update)
+  assert.equal(update.base64, undefined)
+  assert.equal(typeof update.payloadId, 'string')
+  assert.equal(update.base64Bytes, 4)
+
+  const payloadAck = await emitAck(viewer, 'torrent:get-payload', {
+    version: update.version,
+    payloadId: update.payloadId
+  })
+  assert.equal(payloadAck.ok, true)
+  assert.equal(payloadAck.torrent.base64, base64)
+
+  const late = await connectSocket(serverUrl(server))
+  t.after(() => late.disconnect())
+  const lateAck = await emitAck(late, 'room:join', {
+    roomId: 'payload-ref',
+    clientId: 'late-client',
+    name: 'Late'
+  })
+  assert.equal(lateAck.ok, true)
+  assert.equal(lateAck.snapshot.torrent.base64, undefined)
+  assert.equal(lateAck.snapshot.torrent.payloadId, update.payloadId)
+})
+
+test('server enforces member and playback control limits', async t => {
+  const server = await createTestServer({
+    maxMembersPerRoom: 1,
+    controlRateLimitMax: 1,
+    controlRateLimitWindowMs: 1000
+  })
+  const host = await connectSocket(serverUrl(server))
+  const blocked = await connectSocket(serverUrl(server))
+  t.after(async () => {
+    host.disconnect()
+    blocked.disconnect()
+    await server.close()
+  })
+
+  const joinAck = await emitAck(host, 'room:join', {
+    roomId: 'limits',
+    clientId: 'host-client',
+    name: 'Host'
+  })
+  assert.equal(joinAck.ok, true)
+
+  const blockedAck = await emitAck(blocked, 'room:join', {
+    roomId: 'limits',
+    clientId: 'blocked-client',
+    name: 'Blocked'
+  })
+  assert.equal(blockedAck.ok, false)
+  assert.match(blockedAck.error, /member limit/i)
+
+  const firstControl = await emitAck(host, 'control:set', { playing: true, time: 1, reason: 'test' })
+  const secondControl = await emitAck(host, 'control:set', { playing: true, time: 2, reason: 'test' })
+  assert.equal(firstControl.ok, true)
+  assert.equal(secondControl.ok, false)
+  assert.match(secondControl.error, /rate limit/i)
 })
 
 test('server enforces room capacity', async t => {
